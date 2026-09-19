@@ -12,7 +12,7 @@
 | Artifact | Size | SHA-256 |
 | --- | --- | --- |
 | `dist/windows/DENTIVA.exe` — the application, with the Dentiva icon (7 sizes) and the product version resource embedded | 84.3 MB | `9b8abf91bca24a68a9cd1794cd907dab4faf5acd9ce78054db42c045b7fee530` |
-| `dist/DENTIVA-1.0.0-win-x64.zip` — application + installer + docs + notices (the download a clinic should take) | 39.7 MB | `a000d0cb82193d25b61212225c1a1feb1938386ce02cfbc93c95ddbf893a07d4` |
+| `dist/DENTIVA-1.0.0-win-x64.zip` — application + installer + docs + notices (the download a clinic should take) | 39.7 MB | `b0a648e70a8a5cf775a14c3eea7d530abd50afcc00b9a9662365f49cb5a640f4` |
 | `dist/SHA256SUMS.txt` — checksums for both | 170 B | — |
 | Source, tests, docs and build scripts | — | committed to `heyiamshohan-cloud/Dentiva`, branch `arena/01a0bb39-dentiva`, pull request [#1](https://github.com/heyiamshohan-cloud/Dentiva/pull/1) |
 
@@ -157,17 +157,28 @@ kinds, and large-data paging/report budgets.
    installer, the Defender scan and rendering in Edge are performed by
    `resources/ci/release-windows.yml` on a Windows runner; that workflow has **not been executed
    yet**, because the automation account used for this push is not allowed to create workflow files
-   and a human has to copy `resources/ci/release-windows.yml` into `.github/workflows/` once. Until
-   that run is green, treat the "runs on Windows" claim as *the strongest available evidence short
-   of a Windows host*, not as a Windows-side test result.
+   (GitHub answers `403 Resource not accessible by integration`). Copying it in is one command from
+   a clone with your own account:
+
+   ```bash
+   mkdir -p .github/workflows
+   cp resources/ci/release-windows.yml .github/workflows/release-windows.yml
+   git add .github/workflows/release-windows.yml && git commit -m "Add the Windows release pipeline" && git push
+   ```
+
+   Then **Actions → Build and verify the Windows release → Run workflow**. Until that run is green,
+   treat the "runs on Windows" claim as *the strongest available evidence short of a Windows host*,
+   not as a Windows-side test result.
 3. Backups are **not encrypted** (they are ZIP archives).
 4. **One computer per clinic database** — no multi-machine sync, by design.
 5. Prescription **drug names are free text**; no bundled interaction database.
 6. Bangla covers the interface; clinic-typed content (services, drug names, notes) is stored as
    typed.
-7. The visual QA harness runs in **jsdom**, not a real browser engine (Chromium could not be
-   installed on the build machine), so layout is verified by construction and inspection rather
-   than pixel comparison.
+7. The visual QA harness that ran **here** uses **jsdom**, not a real browser engine (Chromium could
+   not be installed on the build machine), so layout in this environment is verified by construction
+   and inspection rather than pixel comparison. The Windows pipeline adds a DOM check and a
+   100–200 % scaling sweep in real Edge/Chromium; **no pixel-level comparison is performed anywhere**,
+   and physical DPI behaviour on a real display remains a user-machine check.
 
 ## 6. The Windows QA matrix — what was executed, and where
 

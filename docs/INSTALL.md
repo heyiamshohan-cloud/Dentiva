@@ -204,6 +204,24 @@ The executable carries its own identity, so you can verify a copy without openin
 * Builders can re-verify everything from source: `bun run verify:exe` reports the icon and version
   resources, and `bun run verify:artifacts` re-checks the checksums, the PE headers, the executable
   identity, the archive contents and that no test data reached the artifacts.
+* To build the release **on Windows** instead of cross-compiling, run the pipeline in
+  `resources/ci/release-windows.yml` on a Windows runner. GitHub only accepts workflow files from an
+  account with the `workflows` permission, so copy it in once and push it — from a clone with your
+  own account:
+
+  ```bash
+  mkdir -p .github/workflows
+  cp resources/ci/release-windows.yml .github/workflows/release-windows.yml
+  git add .github/workflows/release-windows.yml
+  git commit -m "Add the Windows release pipeline"
+  git push
+  ```
+
+  Then open **Actions → Build and verify the Windows release → Run workflow**. The run rebuilds the
+  executable natively, reads the icon and version resource back out, runs `--self-test`, drives the
+  packaged application end to end, checks the installer and the uninstaller, records a Defender scan
+  and publishes the artefacts with checksums — and its evidence is what a Windows-side verification
+  claim can be based on.
 
 **Windows SmartScreen.** Dentiva is not code-signed (a certificate costs money every year and is a
 distribution decision for the vendor), so the first launch may show *"Windows protected your PC"*.
