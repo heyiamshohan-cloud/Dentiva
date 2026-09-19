@@ -234,7 +234,7 @@ try {
       addChartEntry(db, ctx, {
         patient_id: patientId,
         tooth_code: pick(TEETH),
-        condition_code: pick(['caries', 'filled', 'missing', 'crown', 'root_canal_treated']),
+        condition_code: pick(['caries', 'filling_composite', 'missing', 'crown', 'rct', 'calculus', 'gingivitis']),
         note: 'Synthetic finding',
       });
 

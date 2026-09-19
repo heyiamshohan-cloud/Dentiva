@@ -75,20 +75,34 @@ export function parseCookies(request) {
   return cookies;
 }
 
-export function sessionCookie(token, { maxAgeSeconds = 12 * 3600, secure = false } = {}) {
+/**
+ * Build the session cookie.
+ *
+ * The default — `SameSite=Strict`, no `Secure` — is what the desktop application
+ * uses: the window talks to its own loopback server, so a strict cookie can never
+ * be sent anywhere else. `sameSite: 'None'` with `secure: true` exists only for
+ * the development browser preview, where the application is embedded in a page
+ * served from another origin (`bun run preview`, see docs/ARCHITECTURE.md).
+ *
+ * @param {string} token
+ * @param {{ maxAgeSeconds?: number, secure?: boolean, sameSite?: 'Strict'|'Lax'|'None' }} [options]
+ */
+export function sessionCookie(token, { maxAgeSeconds = 12 * 3600, secure = false, sameSite = 'Strict' } = {}) {
   const parts = [
     `dentiva_session=${encodeURIComponent(token)}`,
     'Path=/',
     'HttpOnly',
-    'SameSite=Strict',
+    `SameSite=${sameSite}`,
     `Max-Age=${Math.max(0, Math.floor(maxAgeSeconds))}`,
   ];
-  if (secure) parts.push('Secure');
+  // A cookie with SameSite=None is rejected by browsers unless it is Secure.
+  if (secure || sameSite === 'None') parts.push('Secure');
   return parts.join('; ');
 }
 
-export function clearCookie(name = 'dentiva_session') {
-  return `${name}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`;
+/** @param {string} [name] @param {{ sameSite?: string }} [options] */
+export function clearCookie(name = 'dentiva_session', { sameSite = 'Strict' } = {}) {
+  return `${name}=; Path=/; HttpOnly; SameSite=${sameSite}${sameSite === 'None' ? '; Secure' : ''}; Max-Age=0`;
 }
 
 /** Convert anything thrown by a service into a stable JSON error envelope. */

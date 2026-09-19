@@ -83,6 +83,16 @@ const SHELL_CSP =
   "font-src 'self'; connect-src 'self'; media-src 'self' blob:; object-src 'none'; base-uri 'none'; " +
   "form-action 'none'; frame-ancestors 'self'";
 
+/**
+ * The development browser preview (`bun run preview`) embeds the window in a page
+ * from another origin, so the frame-ancestors directive is relaxed for that mode
+ * only. The desktop application always uses {@link SHELL_CSP}.
+ * @param {boolean} embed
+ */
+function shellCsp(embed) {
+  return embed ? SHELL_CSP.replace("frame-ancestors 'self'", 'frame-ancestors *') : SHELL_CSP;
+}
+
 /* ---------------------------------------------------------------- handlers */
 
 function ctxFromSession(db, session, dataDir) {
@@ -114,12 +124,24 @@ function parseBody(request) {
 
 /**
  * Build the request handler.
- * @param {{ dataDir: string, appToken?: string|null, dev?: boolean, quiet?: boolean }} options
+ * @param {{ dataDir: string, appToken?: string|null, dev?: boolean, quiet?: boolean, embed?: boolean }} options
  */
 export function createApp(options) {
   const { dataDir } = options;
   const apiRouter = createApiRouter();
   const projectRoot = options.dev ? PROJECT_ROOT : null;
+  // Preview mode: the window is opened inside another page (an editor preview
+  // pane), which changes two things — the session cookie has to be usable from a
+  // cross-origin frame, and the shell must be embeddable. Neither applies to the
+  // packaged application, and `null`/`false` keeps the strict defaults.
+  const embed = options.embed === true;
+  const cookieOptions = embed
+    ? { maxAgeSeconds: 12 * 3600, secure: true, sameSite: /** @type {'None'} */ ('None') }
+    : { maxAgeSeconds: 12 * 3600 };
+  // Browsers that block third-party cookies (Safari, Firefox, Chrome with strict
+  // tracking protection) never return the frame's cookie, so preview mode also
+  // accepts the session token in a header that the window keeps in memory.
+  const embedTokenHeader = 'x-dentiva-session';
 
   return async function handle(request) {
     const url = new URL(request.url);
@@ -142,7 +164,7 @@ export function createApp(options) {
         }
 
         const cookies = parseCookies(request);
-        const token = cookies[SESSION_COOKIE] ?? null;
+        const token = cookies[SESSION_COOKIE] ?? (embed ? request.headers.get(embedTokenHeader) : null);
         const authenticated = token ? authenticate(db, token) : null;
         const clientIp = request.headers.get('x-forwarded-for') ?? '127.0.0.1';
         const session = { token, user: authenticated, ip: clientIp };
@@ -178,12 +200,12 @@ export function createApp(options) {
         const headers = {};
         // Both sign-in and first-run setup open a session; hand the cookie back
         // in the same response so the window can continue without a second call.
-        if (result?.token) headers['set-cookie'] = sessionCookie(result.token, { maxAgeSeconds: 12 * 3600 });
-        if (path === '/api/auth/logout') headers['set-cookie'] = clearCookie(SESSION_COOKIE);
+        if (result?.token) headers['set-cookie'] = sessionCookie(result.token, cookieOptions);
+        if (path === '/api/auth/logout') headers['set-cookie'] = clearCookie(SESSION_COOKIE, cookieOptions);
 
         if (result === undefined || result === null) return json({ ok: true }, { headers });
         if (result.sessionCookie) {
-          headers['set-cookie'] = sessionCookie(result.sessionCookie, { maxAgeSeconds: 12 * 3600 });
+          headers['set-cookie'] = sessionCookie(result.sessionCookie, cookieOptions);
         }
         return json(result, { headers });
       }
@@ -204,7 +226,7 @@ export function createApp(options) {
           ? `  <meta name="dentiva-app-token" content="${escapeHtml(options.appToken)}" />\n`
           : '';
         const markup = asset.body.toString('utf8').replace('</head>', `${tokenTag}</head>`);
-        return html(markup, { headers: { 'content-security-policy': SHELL_CSP } });
+        return html(markup, { headers: { 'content-security-policy': shellCsp(embed) } });
       }
 
       if (path.startsWith('/app/')) {
@@ -384,7 +406,7 @@ h1{margin:0 0 6px;font-size:20px}p{margin:6px 0;color:#48606a;line-height:1.5}co
 
 /**
  * Start the loopback server.
- * @param {{ dataDir: string, port?: number, host?: string, dev?: boolean, appToken?: string|null, quiet?: boolean }} options
+ * @param {{ dataDir: string, port?: number, host?: string, dev?: boolean, appToken?: string|null, quiet?: boolean, embed?: boolean }} options
  */
 export async function startServer(options) {
   const prepared = initialiseData(options);
@@ -431,10 +453,20 @@ if (import.meta.main) {
   };
   const dataDir = String(flag('data', process.env.DENTIVA_DATA_DIR ?? join(PROJECT_ROOT, '.data-dev')));
   const port = Number(flag('port', process.env.PORT ?? '0') ?? 0);
+  const host = String(flag('host', process.env.DENTIVA_HOST ?? '127.0.0.1'));
+  const embed = args.includes('--embed');
+  if (host !== '127.0.0.1' && host !== 'localhost') {
+    console.warn(
+      `[dentiva] WARNING: listening on ${host}. This is a development server — it is reachable from the ` +
+        'network and must never be used with real clinic data. The packaged application always binds 127.0.0.1.',
+    );
+  }
   const started = await startServer({
     dataDir,
     port,
+    host,
     dev: args.includes('--dev'),
+    embed,
     appToken: flag('token', null) ?? null,
     quiet: false,
   });

@@ -61,14 +61,32 @@ bun run serve                  # just the HTTP API on http://127.0.0.1:7777
 Data lives in `%LOCALAPPDATA%\Dentiva` on Windows and `./data` on other platforms unless
 `--data <dir>` or `DENTIVA_DATA_DIR` says otherwise.
 
+### Browser preview (development only)
+
+```bash
+bun run preview                 # http://localhost:4747 with a generated dataset
+bun run preview --port 8080     # pick another port
+bun run preview --reset         # throw the preview database away and start over
+```
+
+The preview exists so the application can be opened from a browser outside this machine (an
+editor preview pane, a phone on the same network): it binds `0.0.0.0`, drops the launch token and
+allows framing, and its session cookie is `SameSite=None; Secure` so it survives inside a frame.
+It always runs on a **generated** dataset in `.synthetic-data/` and refuses to start if the
+dataset cannot be produced. Never point it at a real clinic folder — the packaged application
+keeps all the strict defaults (loopback only, launch token, `SameSite=Strict`, `frame-ancestors
+'self'`), and the release gate fails if generated data ever reaches an artifact.
+
 ### Quality gates
 
 ```bash
-bun test tests/            # 129 tests: unit, integration, API, migrations, scheduler, large-data QA
+bun test tests/            # 135 tests: unit, integration, API, preview-mode, migrations,
+                           # scheduler and large-data QA
 bun x tsc --noEmit         # type check (scripts, server, renderer and tests are all JS + JSDoc)
 bun run lint:i18n          # every visible string exists in en + bn and is actually referenced
 bun run qa:renderer        # jsdom sweep: 41 routes rendered against the live API, 0 console errors
 bun run qa:large           # synthetic 1,500-patient dataset with paging/report budgets
+bun run verify:artifacts   # release gate: checksums, PE headers, archive contents, no demo data
 ```
 
 ### Building the Windows executable
@@ -101,10 +119,12 @@ docs/                install, user guide, security, data model, architecture, de
 
 Everything in the release archive was produced by the commands above in this repository:
 
-* `bun test tests/` — 129 pass, 0 fail (2,285 assertions)
+* `bun test tests/` — 135 pass, 0 fail (2,308 assertions)
 * `bun x tsc --noEmit` — clean
 * `bun run lint:i18n` — 1,691 strings in each language, 933 referenced keys resolved
 * `bun run qa:renderer` — 41 routes, 0 failures, 0 console errors
+* `bun run verify:artifacts` — checksums, PE headers, archive contents and payload agree; no
+  synthetic data in either artifact
 * `bun run qa:large` — 1,500 patients: paging, search, dashboard, four reports and the inventory
   report inside their budgets; the page walk returns every patient exactly once
 

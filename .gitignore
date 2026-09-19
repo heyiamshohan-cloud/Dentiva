@@ -24,6 +24,7 @@ tests/**/__snapshots__/actual/
 qa-output/
 *.synthetic.json
 synthetic-data/
+.synthetic-data/
 
 # Editor / OS noise
 .vscode/

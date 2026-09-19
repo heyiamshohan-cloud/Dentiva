@@ -122,6 +122,25 @@ Legal, thermal 80 mm, thermal 58 mm), orientation, margins, scale and whether th
 signature lines appear all come from the clinic's printing settings. "Save as PDF" is the
 operating system's own PDF printer, so no PDF library is bundled.
 
+## Development preview versus the application
+
+`bun run preview` starts the same server with three deliberate differences, all of them opt-in and
+none of them reachable from the packaged application:
+
+| | Application | Preview (`bun run preview`) |
+| --- | --- | --- |
+| Bind address | `127.0.0.1` | `0.0.0.0` (reachable from the network) |
+| Launch token | required on every `/api/**` call | none |
+| Shell CSP | `frame-ancestors 'self'` | `frame-ancestors *` |
+| Session cookie | `SameSite=Strict`, HttpOnly | `SameSite=None; Secure` (a frame is another origin) + an in-memory `x-dentiva-session` fallback for browsers that block third-party cookies |
+| Data | the clinic's folder | generated dataset in `.synthetic-data/` |
+
+Because a preview pane cannot rely on a cross-origin cookie, the renderer keeps the session token
+that the server returns in a sign-in response **in memory only** (never in storage) and sends it as
+`x-dentiva-session`; the server ignores that header unless preview mode is on. The desktop launcher
+(`src/main/entry.js`) does not expose `--host` or `--embed`, so a shipped build cannot be started
+this way by accident.
+
 ## Background work
 
 `src/server/services/scheduler.js` runs while the application is open. Its only job today is the

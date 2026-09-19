@@ -2,7 +2,7 @@
   "name": "dentiva",
   "productName": "Dentiva",
   "version": "1.0.0",
-  "description": "Dentiva — Premium Dental Practice Management System (offline-first Windows desktop application)",
+  "description": "Dentiva \u2014 Premium Dental Practice Management System (offline-first Windows desktop application)",
   "author": {
     "name": "Md. Shohan Khan",
     "email": "helloiamshohan@gmail.com"
@@ -18,6 +18,7 @@
     "start": "bun src/main/entry.js --dev",
     "dev": "bun src/main/entry.js --dev --open",
     "serve": "bun src/server/index.js",
+    "preview": "bun scripts/preview.mjs",
     "test": "bun test tests/unit tests/integration tests/api tests/migrations",
     "test:all": "bun test",
     "test:watch": "bun test --watch tests/unit tests/integration",
@@ -28,8 +29,7 @@
     "seed:defaults": "bun scripts/seed-defaults.mjs",
     "seed:synthetic": "bun scripts/seed-synthetic.mjs",
     "qa:renderer": "bun scripts/qa-renderer.mjs",
-    "qa:visual": "bun scripts/qa-visual.mjs",
-    "qa:large": "bun tests/qa/large-data.test.js",
+    "qa:large": "bun test tests/qa/large-data.test.js",
     "build:win": "bun scripts/build-win.mjs",
     "build:win:fast": "bun scripts/build-win.mjs --skip-tests",
     "verify:artifacts": "bun scripts/verify-artifacts.mjs"
@@ -37,10 +37,8 @@
   "devDependencies": {
     "@fontsource/inter": "5.2.6",
     "@fontsource/noto-sans-bengali": "5.2.6",
-    "@sparticuz/chromium": "153.0.0",
     "@types/bun": "1.4.2",
     "jsdom": "^30.1.0",
-    "puppeteer-core": "24.10.1",
     "typescript": "5.9.2"
   }
 }

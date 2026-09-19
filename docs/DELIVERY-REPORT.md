@@ -11,8 +11,8 @@
 
 | Artifact | Size | SHA-256 |
 | --- | --- | --- |
-| `dist/windows/DENTIVA.exe` — the application | 84.3 MB | `77429cbf5b7b7dc99c60fc3b2cd3a6aa933c6571d157fcd5c67eba0ad29e2b3d` |
-| `dist/DENTIVA-1.0.0-win-x64.zip` — application + installer + docs + notices (the download a clinic should take) | 39.7 MB | `31165a695d03b35be03261db7efda4839901ed11560ebe18f4fd5f05127497af` |
+| `dist/windows/DENTIVA.exe` — the application | 84.3 MB | `2da4b7d974a2f853c8a97876f73fe52c313b92d875158d6abffee235ea6ab4cd` |
+| `dist/DENTIVA-1.0.0-win-x64.zip` — application + installer + docs + notices (the download a clinic should take) | 39.7 MB | `f342185189d26171ad6e299c4be43631c6d0ccc14a4d5e7a170b0e4082f0f26a` |
 | `dist/SHA256SUMS.txt` — checksums for both | 170 B | — |
 | Source, tests, docs and build scripts | — | committed to `heyiamshohan-cloud/Dentiva`, branch `arena/01a0bb39-dentiva` (commits `4b716fc` and `6b8f9f7`), pull request [#1](https://github.com/heyiamshohan-cloud/Dentiva/pull/1) |
 
@@ -66,11 +66,12 @@ final source tree. Nothing is estimated.
 
 | Command | Result |
 | --- | --- |
-| `bun test tests/` | **129 pass, 0 fail**, 2,285 assertions, 11 files (unit, integration, API, migrations, scheduler, large-data QA) |
+| `bun test tests/` | **135 pass, 0 fail**, 2,308 assertions, 12 files (unit, integration, API, preview-mode, migrations, scheduler, large-data QA) |
 | `bun x tsc --noEmit` | exit 0 — no type errors across launcher, server, renderer, scripts and tests |
 | `bun scripts/check-i18n.mjs` | **1,691 keys** present in both `en` and `bn`, 933 keys referenced by code, no missing/unused/one-sided key |
 | `bun run qa:renderer` | **41 routes, 0 failures, 0 console errors** (jsdom sweep against a live server) |
-| `bun run qa:large` | 1,500 patients / 1,220 treatments / ~1,000 invoices: patient page 2 ms, dashboard 2 ms, revenue report 4 ms, receivables ageing 3 ms, all inside budget; page walk returns every patient exactly once; database 3.8 MB |
+| `bun run qa:large` | 1,500 patients / 1,220 treatments / ~1,000 invoices: patient page 2 ms, dashboard 2.5 ms, revenue report 5 ms, receivables ageing 3 ms, all inside budget; page walk returns every patient exactly once; database 3.8 MB |
+| `bun run preview` + HTTP probes | preview mode verified end to end: embeddable shell with `frame-ancestors *`, no launch token, cookie `SameSite=None; Secure`, `x-dentiva-session` header accepted, 200-patient generated dataset, printed invoice document renders; packaged defaults assert the strict behaviour in `tests/api/preview-mode.test.js` |
 | `bun scripts/build-win.mjs` | gates → icon → embedded assets (44 files, 1.0 MB) → `bun-windows-x64` compile → PE subsystem set to Windows GUI → PE verification → archive + SHA-256 |
 | `bun run verify:artifacts` | checksums match, `MZ`/`PE`/x86-64/PE32+/GUI-subsystem verified, all 14 required archive entries present, archived exe identical to `dist/windows/DENTIVA.exe`, clinic catalogue and Bengali catalogue embedded, **no synthetic or demo data in either artifact** |
 | `bun src/main/entry.js --self-test` | `{ ok: true, version: 1.0.0, build: 100, schema: 10, migration: 10 }` |

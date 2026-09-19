@@ -44,6 +44,30 @@ function launchToken() {
   return meta ? String(meta.getAttribute('content') ?? '') : '';
 }
 
+/**
+ * Preview sessions.
+ *
+ * The token lives in memory only (never in storage) and is cleared when the tab
+ * closes or the user signs out. In the desktop application the server never
+ * returns a token in a body, so this stays unused.
+ * @type {string}
+ */
+let previewSessionToken = '';
+
+/** @returns {Record<string, string>} */
+function sessionHeader() {
+  return previewSessionToken ? { 'x-dentiva-session': previewSessionToken } : {};
+}
+
+/** @param {any} payload @param {string} path */
+function rememberSession(payload, path) {
+  if (path === '/api/auth/logout') {
+    previewSessionToken = '';
+    return;
+  }
+  if (payload && typeof payload.token === 'string' && payload.token) previewSessionToken = payload.token;
+}
+
 export class ApiError extends Error {
   /**
    * @param {string} message
@@ -92,7 +116,7 @@ export async function request(path, options = {}) {
   /** @type {Record<string, any>} */
   const init = {
     method,
-    headers: { 'x-dentiva-app': launchToken(), ...headers },
+    headers: { 'x-dentiva-app': launchToken(), ...sessionHeader(), ...headers },
     credentials: 'same-origin',
   };
   if (body instanceof FormData) {
@@ -114,6 +138,11 @@ export async function request(path, options = {}) {
       payload = text;
     }
   }
+  // The packaged application keeps its session in an HttpOnly cookie. A browser
+  // preview embedded in a page from another origin cannot rely on that cookie
+  // (third-party cookie policies), so when the server hands the session token
+  // back in the body it is kept for this tab in memory and sent as a header.
+  rememberSession(payload, path);
   if (!response.ok) {
     const error = payload && payload.error ? payload.error : {};
     const fallback = error.message || `HTTP ${response.status}`;
