@@ -14,7 +14,7 @@
 | `dist/windows/DENTIVA.exe` — the application | 84.3 MB | `77429cbf5b7b7dc99c60fc3b2cd3a6aa933c6571d157fcd5c67eba0ad29e2b3d` |
 | `dist/DENTIVA-1.0.0-win-x64.zip` — application + installer + docs + notices (the download a clinic should take) | 39.7 MB | `31165a695d03b35be03261db7efda4839901ed11560ebe18f4fd5f05127497af` |
 | `dist/SHA256SUMS.txt` — checksums for both | 170 B | — |
-| Source, tests, docs and build scripts | — | committed to `heyiamshohan-cloud/Dentiva`, branch `arena/01a0bb39-dentiva` (commit `4b716fc`) |
+| Source, tests, docs and build scripts | — | committed to `heyiamshohan-cloud/Dentiva`, branch `arena/01a0bb39-dentiva` (commits `4b716fc` and `6b8f9f7`), pull request [#1](https://github.com/heyiamshohan-cloud/Dentiva/pull/1) |
 
 The archive contains: `DENTIVA.exe`, `install.cmd`, `install.ps1`, `uninstall.ps1`, `icon.ico`,
 `icon.png`, `README.md`, `LICENSE`, `THIRD-PARTY-NOTICES.txt` and `docs/` (user guide, install
