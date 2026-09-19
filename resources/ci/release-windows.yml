@@ -1,0 +1,76 @@
+name: Build Windows release
+
+# INSTALLING THIS WORKFLOW
+#   Copy this file to `.github/workflows/release-windows.yml` in the repository
+#   (and grant the GitHub App/token the `workflows` permission, which is what
+#   stopped it from being committed here automatically).
+
+# Produces the real DENTIVA.exe on a Windows runner and attaches it to a release.
+# The sandbox build machine is Linux, so the shipped executable is cross-compiled
+# there (PE headers and payload are verified by `bun run verify:artifacts`, but
+# the `--windows-*` metadata switches need a Windows host). This workflow is the
+# supported way to produce a build with the icon and version resource stamped in,
+# and it is also the cleanest route to a downloadable artifact.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag to publish (for example v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Quality gates
+        run: |
+          bun scripts/check-i18n.mjs
+          bun x tsc --noEmit
+          bun test tests/
+
+      - name: Build executable, archive and checksums
+        run: bun scripts/build-win.mjs --skip-tests
+
+      - name: Verify artifacts
+        run: bun run verify:artifacts
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dentiva-windows-x64
+          path: |
+            dist/windows/DENTIVA.exe
+            dist/*.zip
+            dist/SHA256SUMS.txt
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.version || github.ref_name }}
+        run: |
+          gh release create "$TAG" \
+            dist/windows/DENTIVA.exe \
+            dist/*.zip \
+            dist/SHA256SUMS.txt \
+            --title "Dentiva ${TAG#v} — Windows x64" \
+            --notes "Dentiva ${TAG#v} — offline-first dental practice management system for Windows. See docs/CHANGELOG.md for the full change list and docs/INSTALL.md for installation." \
+            --repo "$GITHUB_REPOSITORY" || \
+          gh release upload "$TAG" dist/windows/DENTIVA.exe dist/*.zip dist/SHA256SUMS.txt --clobber --repo "$GITHUB_REPOSITORY"
