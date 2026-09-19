@@ -78,12 +78,10 @@ function New-Shortcut([string]$Path, [string]$Target) {
   $shortcut = $shell.CreateShortcut($Path)
   $shortcut.TargetPath = $Target
   $shortcut.WorkingDirectory = Split-Path -Parent $Target
-  # A cross-compiled executable has no icon resource, so the shortcuts point at
-  # the shipped icon file; a build made on Windows embeds it and this is a no-op
-  # that still renders identically.
-  $iconFile = Join-Path (Split-Path -Parent $Target) 'icon.ico'
-  if (Test-Path $iconFile) { $shortcut.IconLocation = $iconFile }
-  else { $shortcut.IconLocation = "$Target,0" }
+  # The icon is embedded in DENTIVA.exe itself (16-256 px), so the shortcut shows
+  # the same mark as the taskbar and Alt-Tab. `icon.ico` ships next to the program
+  # as well, which is what other tools and the Explorer icon picker expect.
+  $shortcut.IconLocation = "$Target,0" 
   $shortcut.Description = "$appName — dental practice management"
   $shortcut.Save()
 }
@@ -109,12 +107,33 @@ Set-ItemProperty -Path $uninstallKey -Name 'DisplayName' -Value $appName
 Set-ItemProperty -Path $uninstallKey -Name 'DisplayVersion' -Value $appVersion
 Set-ItemProperty -Path $uninstallKey -Name 'Publisher' -Value $publisher
 Set-ItemProperty -Path $uninstallKey -Name 'InstallLocation' -Value $InstallDir
-Set-ItemProperty -Path $uninstallKey -Name 'DisplayIcon' -Value $installedExe
+Set-ItemProperty -Path $uninstallKey -Name 'DisplayIcon' -Value "$installedExe,0"
 Set-ItemProperty -Path $uninstallKey -Name 'NoModify' -Value 1 -Type DWord
 Set-ItemProperty -Path $uninstallKey -Name 'NoRepair' -Value 1 -Type DWord
 Set-ItemProperty -Path $uninstallKey -Name 'UninstallString' `
   -Value "powershell.exe -ExecutionPolicy Bypass -NoProfile -File `"$uninstallScript`""
 Write-Step 'Registered in Apps & features'
+
+# Prove the installed copy actually starts before telling anyone it is ready.
+# The same check as `DENTIVA.exe --self-test`, on a throwaway data folder that is
+# deleted again — the clinic's own data folder is never touched.
+Write-Step 'Verifying the installation'
+$probe = Join-Path ([IO.Path]::GetTempPath()) ('dentiva-install-check-' + [Guid]::NewGuid().ToString('n').Substring(0, 8))
+$verified = $false
+try {
+  $check = Start-Process -FilePath $installedExe -ArgumentList '--self-test', '--data', $probe -Wait -PassThru -WindowStyle Hidden
+  $verified = ($check.ExitCode -eq 0)
+} catch {
+  $verified = $false
+}
+Remove-Item -Path $probe -Recurse -Force -ErrorAction SilentlyContinue
+if (-not $verified) {
+  Write-Host ''
+  Write-Host "$appName was installed but did not pass its start-up check." -ForegroundColor Red
+  Write-Host "Run  `"$installedExe --self-test`"  to see what failed, and check that your user profile is writable." -ForegroundColor Red
+  exit 1
+}
+Write-Step 'Self-test passed (engine, database and interface assets)'
 
 Write-Host ''
 Write-Host "$appName $appVersion installed successfully." -ForegroundColor Green

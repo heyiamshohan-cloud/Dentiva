@@ -107,12 +107,34 @@ whole thing up — with no internet connection, no subscription and no demo data
 
 | Gate | Result |
 | --- | --- |
-| `bun test tests/` | 129 pass, 0 fail (2,285 assertions, 11 files) |
+| `bun test tests/` | 148 pass, 0 fail (2,734 assertions, 13 files) |
 | `bun x tsc --noEmit` | clean |
 | `bun run lint:i18n` | 1,691 keys in en + bn, 933 referenced keys resolved |
 | `bun run qa:renderer` | 41 routes, 0 failures, 0 console errors |
 | `bun run qa:large` | 1,500 patients — every measured interaction inside budget |
-| `bun scripts/build-win.mjs` | quality gates, PE verification, archive and SHA-256 written |
+| `bun run qa:packaged` | 26/26 checks against a running instance: setup, clinical, billing, inventory, attachments, documents for every paper size, reports, backup → verify → restore, audit |
+| `bun scripts/build-win.mjs` | quality gates, icon and version resource stamped, PE verification, archive, checksums, `verify:artifacts` |
+| `bun run verify:exe` | Dentiva's icon (7 sizes) and version information are inside the executable; no compiler identity remains |
+
+### Defects found and fixed while packaging 1.0.0
+
+* An **attachment with a Bengali file name could not be downloaded**: the name was written into the
+  `Content-Disposition` header verbatim and a header carries bytes, not text, so the download failed
+  with a server error. The header now uses an ASCII fallback plus the RFC 6266
+  `filename*=UTF-8''…` form, and a regression test attaches and downloads `রোগীর_এক্সরে.png`.
+* **Opening any attachment returned an empty page**: the API dispatcher wrapped every handler result
+  in JSON, including the single route that streams a stored file with its own content type. The
+  dispatcher passes a `Response` through untouched now, so X-rays, scans and consent forms open and
+  download byte for byte.
+* A cross-compiled executable kept `bun.exe`'s icon and the publisher "Oven" in Explorer. The build
+  now rewrites the resource section from `resources/icon.ico` and `src/shared/constants.js`
+  (`scripts/stamp-exe.mjs`), and `verify:artifacts` fails the release if the identity drifts.
+* **Every document printed on A4, whatever paper the clinic had chosen.** The print settings were
+  compared with the `PAPER_SIZES` list of objects instead of their codes, so the comparison never
+  matched and the paper size silently fell back to A4 — an A5 prescription or an 80 mm thermal
+  receipt wasted a full sheet. `paperFor` compares codes now, and the `@page` rule is asserted for
+  A4, A5, Letter, Legal, 80 mm and 58 mm, portrait and landscape and a 20 mm margin, over HTTP
+  (`tests/api/api.test.js`) and against the packaged build (`scripts/qa-packaged.mjs`).
 
 ---
 
@@ -124,13 +146,17 @@ disabled button or a placeholder screen:
 1. **The executable is not code-signed.** Windows SmartScreen may warn on first launch
    ("Windows protected your PC" → *More info* → *Run anyway*). Code signing requires a paid
    certificate and is a distribution decision for the vendor.
-2. **Built on a Linux machine for Windows.** The release executable is cross-compiled and its PE
-   headers, subsystem, machine type and embedded payload are verified by the build script, but it
-   could not be *executed* on Windows during this build. The product metadata and icon resource
-   inside the `.exe` are therefore not stamped (a `--windows-*` Bun switch needs a Windows host);
-   the installer puts the shipped `icon.ico` on the shortcuts instead. Re-running
-   `bun run build:win` on Windows produces the same application with the icon and metadata
-   embedded.
+2. **Built on a Linux machine for Windows, and not yet started on a Windows host in this
+   environment.** The executable is cross-compiled; its PE headers, subsystem, machine type, the
+   resource section (icon and version information) and the embedded payload are all verified by the
+   build, and the application itself is exercised end to end by `bun run qa:packaged`, but the
+   `.exe` could not be *executed* here — this environment has no Windows host, no Wine, and cannot
+   download one. `resources/ci/release-windows.yml` performs the Windows-side checks that only a
+   real machine can do (`DENTIVA.exe --self-test`, installer → shortcuts → uninstall,
+   portable mode, the packaged QA run, an Edge render check and a Defender scan), and it needs to be
+   copied into `.github/workflows/` once by an account that is allowed to create workflow files.
+   Until that run is green, "runs on Windows" rests on the strongest evidence available without a
+   Windows host, not on a Windows-side test result.
 3. **Backups are not encrypted.** They are ordinary ZIP archives. Store them on an encrypted
    drive if the clinic requires encryption at rest.
 4. **One computer, one clinic per database.** Dentiva is intentionally single-user-at-a-time and

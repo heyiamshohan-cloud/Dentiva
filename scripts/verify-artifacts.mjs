@@ -20,6 +20,20 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { listZip, readZipEntry } from '../src/server/domain/zip.js';
+import {
+  buildIconGroup,
+  buildIconResource,
+  buildVersionInfo,
+  parsePe,
+  parseVersionInfo,
+  RESOURCE_DIRECTORY_INDEX,
+  resourcesOfType,
+  RT_GROUP_ICON,
+  RT_ICON,
+  RT_MANIFEST,
+  RT_VERSION,
+} from './lib/pe.mjs';
+import { FOUR_PART_VERSION, productVersionStrings } from './lib/product-metadata.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = join(ROOT, 'dist');
@@ -87,7 +101,74 @@ for (const [label, passed] of checks) {
   else fail(`executable check failed: ${label}`);
 }
 
-/* --------------------------------------------------- 3. archive contents */
+/* -------------------------------------- 3. product identity inside the EXE */
+
+console.log('\n▸ Executable identity');
+{
+  // Nothing is taken on trust: the icon and the version resource are rebuilt
+  // from `resources/icon.ico` and `src/shared/constants.js` and compared with
+  // what the executable actually contains, byte for byte.
+  const iconSource = readFileSync(join(ROOT, 'resources/icon.ico'));
+  const pe = parsePe(exeBytes);
+  const section = pe.sectionForRva(pe.dataDirectories[RESOURCE_DIRECTORY_INDEX].rva);
+  const budget = section ? Math.min(section.virtualSize, section.rawSize) - 512 : 0;
+  const expectedImages = buildIconResource(iconSource, { budget });
+  const embedded = resourcesOfType(exeBytes, RT_ICON).sort((a, b) => Number(a.id) - Number(b.id));
+  const group = resourcesOfType(exeBytes, RT_GROUP_ICON);
+
+  if (embedded.length === expectedImages.length) ok(`${embedded.length} icon sizes embedded (${expectedImages.map((image) => image.width).join(', ')} px)`);
+  else fail(`expected ${expectedImages.length} icon resources in the executable, found ${embedded.length}`);
+  expectedImages.forEach((image, index) => {
+    const found = embedded[index];
+    if (!found) return;
+    const bytes = exeBytes.subarray(found.offset, found.offset + found.size);
+    if (bytes.equals(image.data)) ok(`icon ${image.width}×${image.height} (${image.encoded}) matches resources/icon.ico`);
+    else fail(`the ${image.width}×${image.height} icon resource differs from resources/icon.ico`);
+  });
+
+  if (!group.length) {
+    fail('the executable has no icon group — Explorer would show a generic icon');
+  } else {
+    const bytes = exeBytes.subarray(group[0].offset, group[0].offset + group[0].size);
+    if (bytes.equals(buildIconGroup(expectedImages))) ok(`icon group “${group[0].name}” lists every size (taskbar, Start Menu, Explorer, installer)`);
+    else fail('the icon group does not match the embedded icon sizes');
+  }
+
+  const expectedStrings = productVersionStrings();
+  const versionResources = resourcesOfType(exeBytes, RT_VERSION);
+  if (!versionResources.length) {
+    fail('the executable carries no version information');
+  } else {
+    const expectedBlob = buildVersionInfo(expectedStrings, { fileVersion: FOUR_PART_VERSION, productVersion: FOUR_PART_VERSION });
+    const found = versionResources[0];
+    const bytes = exeBytes.subarray(found.offset, found.offset + found.size);
+    const parsed = parseVersionInfo(exeBytes, found.offset);
+    if (bytes.equals(expectedBlob)) ok('version resource matches the product catalogue byte for byte');
+    else fail('the version resource differs from the strings in src/shared/constants.js');
+    for (const [key, value] of Object.entries(expectedStrings)) {
+      if (parsed.strings[key] === value) ok(`${key} = ${value}`);
+      else fail(`${key} is “${parsed.strings[key] ?? 'missing'}”, expected “${value}”`);
+    }
+    if (parsed.fixedFileVersion === FOUR_PART_VERSION) ok(`fixed file version ${FOUR_PART_VERSION}`);
+    else fail(`fixed file version is ${parsed.fixedFileVersion}, expected ${FOUR_PART_VERSION}`);
+    const foreign = ['Bun', 'Oven', 'bun.exe'].filter((name) => Object.values(parsed.strings).some((value) => value.includes(name)));
+    if (foreign.length) fail(`the version resource still carries the compiler's identity: ${foreign.join(', ')}`);
+    else ok('no compiler identity left in the version resource');
+    if (parsed.translations.includes('0x0409 0x04b0')) ok('version resource is en-US Unicode (0409 04b0)');
+    else fail(`unexpected version translations: ${parsed.translations.join(', ') || 'none'}`);
+  }
+
+  const manifest = resourcesOfType(exeBytes, RT_MANIFEST)[0];
+  if (!manifest) {
+    fail('the executable has no application manifest');
+  } else {
+    const text = exeBytes.subarray(manifest.offset, manifest.offset + manifest.size).toString('utf8');
+    if (text.includes('longPathAware')) ok('application manifest preserved (long paths, segment heap)');
+    else fail('the application manifest lost its Windows settings');
+  }
+}
+
+/* --------------------------------------------------- 4. archive contents */
 
 const REQUIRED = [
   'DENTIVA.exe',
@@ -131,7 +212,7 @@ if (archivePath) {
   }
 }
 
-/* ---------------------------------------------- 4. embedded resources/data */
+/* ---------------------------------------------- 5. embedded resources/data */
 
 console.log('\n▸ Contents');
 const markers = [

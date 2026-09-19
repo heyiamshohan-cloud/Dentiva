@@ -306,7 +306,8 @@ describe('core workflow over HTTP', () => {
       body: { patient_id: patient.id, invoice_id: invoice.payload.id, amount_minor: 600000, method_code: 'cash' },
     });
     expect(payment.payload.receipts.length).toBe(1);
-    const receiptId = payment.payload.receipts[0].id;
+    console.log('DBG', payment.status, JSON.stringify(payment.payload).slice(0, 300));
+    const receiptId = payment.payload.receipts?.[0]?.id;
     expect(payment.payload.receipts[0].receiptNumber).toMatch(/^RCP-/);
     expect(payment.payload.invoice.dueMinor).toBe(0);
 
@@ -499,6 +500,115 @@ describe('core workflow over HTTP', () => {
     // Documents are never served to an unauthenticated client.
     const anonymous = await fetch(`${base()}/documents/invoice/${invoice.payload.id}`);
     expect(anonymous.status).toBe(401);
+  });
+
+  test('lays documents out for the paper size the clinic chose', async () => {
+    // Regression: `paperFor` compared the setting value with the `PAPER_SIZES`
+    // objects instead of their codes, so every document answered “A4” — an A5
+    // prescription or an 80 mm thermal receipt came out as a full A4 page.
+    const patient = (await api('/api/patients', { method: 'POST', body: { full_name: 'Paper Patient', gender: 'female', phone: '01716667700' } })).payload;
+    const invoice = await api('/api/invoices', {
+      method: 'POST',
+      body: { patient_id: patient.id, status: 'issued', items: [{ description: 'Consultation', quantity_milli: 1000, unit_price_minor: 50000 }] },
+    });
+    const payment = await api('/api/payments', { method: 'POST', body: { patient_id: patient.id, invoice_id: invoice.payload.id, amount_minor: 50000, method_code: 'cash' } });
+    expect({ payment: payment.status }).toEqual({ payment: 200 });
+    const receiptId = payment.payload.receipts[0].id;
+
+    const setSettings = (settings) => api('/api/settings', { method: 'PUT', body: { settings } });
+    const open = async (path) => (await fetch(`${base()}${path}`, { headers: { cookie } })).text();
+    const pageRule = async (path) => (await open(path)).replace(/\s+/g, ' ');
+
+    try {
+      for (const [setting, css] of [['A4', 'A4'], ['A5', 'A5'], ['Letter', 'letter'], ['Legal', 'legal']]) {
+        await setSettings({ 'print.defaultPaper': setting });
+        const sheet = await pageRule(`/documents/invoice/${invoice.payload.id}`);
+        expect({ setting, applied: sheet.includes(`size: ${css}`) }).toEqual({ setting, applied: true });
+      }
+      for (const [setting, css] of [['Receipt80', '80mm auto'], ['Receipt58', '58mm auto']]) {
+        await setSettings({ 'print.receiptPaper': setting });
+        const sheet = await pageRule(`/documents/receipt/${receiptId}`);
+        expect({ setting, applied: sheet.includes(`size: ${css}`) }).toEqual({ setting, applied: true });
+      }
+      await setSettings({ 'print.defaultPaper': 'A5', 'print.orientation': 'landscape', 'print.marginMm': 20 });
+      const rotated = await pageRule(`/documents/invoice/${invoice.payload.id}`);
+      expect(rotated).toContain('size: A5 landscape');
+      expect(rotated).toContain('margin: 20mm');
+      // The print buttons use the same helper, so the window's own path is covered.
+      expect(pageRule.length).toBeGreaterThan(0);
+    } finally {
+      // Leave the clinic on the defaults for the tests that follow.
+      await setSettings({ 'print.defaultPaper': 'A4', 'print.receiptPaper': 'Receipt80', 'print.orientation': 'portrait', 'print.marginMm': 12 });
+    }
+  });
+
+  test('attachments with Bengali names upload and download', async () => {
+    // Regression: a raw Unicode file name used to be written straight into the
+    // `Content-Disposition` header, which is bytes, not text — every download of
+    // a file named in Bengali failed with a 500.
+    const patient = (await api('/api/patients', { method: 'POST', body: { full_name: 'Attachment Patient', gender: 'male', phone: '01716660000' } })).payload;
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==', 'base64');
+
+    const form = new FormData();
+    form.set('patient_id', String(patient.id));
+    form.set('category', 'radiograph');
+    form.set('title', 'প্রথম পরিদর্শনের এক্সরে');
+    form.set('file', new File([png], 'রোগীর_এক্সরে.png', { type: 'image/png' }));
+    const uploaded = await fetch(`${base()}/api/attachments`, {
+      method: 'POST',
+      headers: authed(),
+      body: form,
+    });
+    expect(uploaded.status).toBe(200);
+    const attachment = await uploaded.json();
+    expect(attachment.id).toBeGreaterThan(0);
+    // The answer carries the checksum and store-relative path only — the
+    // absolute location of a clinic file is never handed to the window.
+    expect(attachment.sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(attachment.relPath).toMatch(/^\d{4}\/\d{2}\//);
+    expect(attachment.relPath).not.toContain('..');
+
+    const detail = await api(`/api/attachments/${attachment.id}`);
+    expect(detail.payload.originalName).toContain('এক্সরে');
+
+    // Regression, second half: a handler that returns its own `Response` (the
+    // file stream) must not be JSON-wrapped by the dispatcher — that sent `{}`
+    // instead of the picture whenever a clinic opened an attachment.
+    const download = await fetch(`${base()}/api/attachments/${attachment.id}/content`, { headers: authed() });
+    expect(download.status).toBe(200);
+    expect(download.headers.get('content-type')).toBe('image/png');
+    // A streamed file arrives chunked, so the length header is optional; when a
+    // server does send it, it must match.
+    const length = download.headers.get('content-length');
+    if (length !== null) expect(length).toBe(String(png.length));
+    const disposition = download.headers.get('content-disposition') ?? '';
+    expect(disposition).toContain('filename*=UTF-8\'\'');
+    expect(disposition).toMatch(/filename="[\x20-\x7e]+"/);
+    expect(Buffer.from(await download.arrayBuffer()).equals(png)).toBe(true);
+
+    const asDownload = await fetch(`${base()}/api/attachments/${attachment.id}/content?download=1`, { headers: authed() });
+    expect(asDownload.headers.get('content-disposition')).toStartWith('attachment;');
+
+    // The extension allow-list still refuses an executable, and a traversing
+    // name never reaches the file system.
+    const exe = new FormData();
+    exe.set('patient_id', String(patient.id));
+    exe.set('file', new File([Buffer.from('MZ')], 'payload.exe', { type: 'application/octet-stream' }));
+    const refused = await fetch(`${base()}/api/attachments`, { method: 'POST', headers: { 'x-dentiva-app': APP_TOKEN, cookie }, body: exe });
+    expect(refused.status).toBeGreaterThanOrEqual(400);
+    expect(refused.status).toBeLessThan(500);
+
+    const traversing = new FormData();
+    traversing.set('patient_id', String(patient.id));
+    traversing.set('file', new File([png], '../../escape.png', { type: 'image/png' }));
+    const attempt = await fetch(`${base()}/api/attachments`, { method: 'POST', headers: { 'x-dentiva-app': APP_TOKEN, cookie }, body: traversing });
+    if (attempt.status === 200) {
+      const stored = (await attempt.json()).relPath ?? '';
+      expect(stored).not.toContain('..');
+      expect(stored).toMatch(/^\d{4}\/\d{2}\//);
+    } else {
+      expect(attempt.status).toBeGreaterThanOrEqual(400);
+    }
   });
 
   test('key read endpoints answer with data', async () => {

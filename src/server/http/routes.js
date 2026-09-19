@@ -8,7 +8,7 @@
  * Handler context: `{ db, ctx, params, query, body, request, session, options }`
  * where `ctx = { clinicId, user, ip, dataDir }` is exactly what services expect.
  */
-import { Router, queryObject, intParam, readJson, readMultipart } from './http.js';
+import { Router, contentDisposition, intParam, queryObject, readJson, readMultipart } from './http.js';
 import { safeDownloadName } from '../services/fileStore.js';
 import { ValidationError, NotFoundError } from '../../shared/errors.js';
 import { todayIso, addDays } from '../domain/dates.js';
@@ -587,9 +587,13 @@ export const routes = [
       const name = safeDownloadName(row.original_name ?? row.rel_path);
       const headers = {
         'content-type': row.mime_type ?? 'application/octet-stream',
+        // Bun streams a file descriptor with chunked transfer-encoding, so this
+        // length is advisory: the browser still receives the exact bytes.
         'content-length': String(row.size_bytes ?? 0),
         'cache-control': 'private, max-age=300',
-        'content-disposition': `${query.download === 'true' || query.download === '1' ? 'attachment' : 'inline'}; filename="${name}"`,
+        // Bengali (or any non-ASCII) file names need the RFC 6266 form; a raw
+        // Unicode value in a header makes the download fail.
+        'content-disposition': contentDisposition(query.download === 'true' || query.download === '1' ? 'attachment' : 'inline', name),
         'x-content-type-options': 'nosniff',
       };
       return new Response(/** @type {any} */ (stream), { status: 200, headers });

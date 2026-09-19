@@ -51,6 +51,11 @@ powershell -ExecutionPolicy Bypass -File install.ps1 -Portable       # USB stick
 
 ---
 
+The installed `DENTIVA.exe` is byte-identical to the one in the archive, so the identity checks in
+§10 apply to the installed copy as well.
+
+---
+
 ## 3. Portable / USB mode
 
 Extract the archive anywhere — a USB stick, a network folder, a second computer — and run
@@ -170,8 +175,38 @@ automatic daily/weekly/monthly backups with a retention count.
 Diagnostics that help when reporting a problem:
 
 ```powershell
-DENTIVA.exe --version
-DENTIVA.exe --self-test
+DENTIVA.exe --version       # Dentiva 1.0.0 (build 100, schema v10)
+DENTIVA.exe --self-test     # starts the engine, checks the API, prints JSON, exits
 ```
 
-Both print machine-readable output and never modify your data.
+Both print machine-readable output and never modify your data. `--self-test` is the quickest way
+to confirm that an installation is healthy: it reports `ok`, the version, the build, the schema
+version and the data folder it used. It is also what `install.ps1` runs at the end of an install.
+
+---
+
+## 10. Checking you have the genuine build
+
+The executable carries its own identity, so you can verify a copy without opening it:
+
+* **Right-click `DENTIVA.exe` → Properties → Details.** You should see *Product name* `Dentiva`,
+  *File description* `Dentiva — Dental Practice Management System`, *File version* and *Product
+  version* `1.0.0.100`, *Company* `Md. Shohan Khan` and *Copyright* `© 2026 Md. Shohan Khan`.
+* **The icon in Explorer, the taskbar, the Start Menu and Alt-Tab** is the teal tooth mark at every
+  size Windows asks for (16–256 px). A generic or Bun-shaped icon means the file is not a Dentiva
+  build.
+* **The SHA-256 checksums** in `dist/SHA256SUMS.txt` (also inside the release archive) must match:
+
+  ```powershell
+  Get-FileHash .\DENTIVA.exe -Algorithm SHA256
+  ```
+
+* Builders can re-verify everything from source: `bun run verify:exe` reports the icon and version
+  resources, and `bun run verify:artifacts` re-checks the checksums, the PE headers, the executable
+  identity, the archive contents and that no test data reached the artifacts.
+
+**Windows SmartScreen.** Dentiva is not code-signed (a certificate costs money every year and is a
+distribution decision for the vendor), so the first launch may show *"Windows protected your PC"*.
+Choose *More info* → *Run anyway*. The verification steps above are the honest substitute for a
+signature: they prove the file is the one this repository built. Once the publisher buys a
+certificate, `signtool` can sign the same executable without any code change.

@@ -39,7 +39,8 @@ ship in the release archive:
 | `@fontsource/inter` | 5.2.6 | OFL-1.1 | Source of the shipped Inter `.woff2` files |
 | `@fontsource/noto-sans-bengali` | 5.2.6 | OFL-1.1 | Source of the shipped Noto Sans Bengali `.woff2` files |
 
-The build script (`scripts/build-win.mjs`) uses only the Bun toolchain, Node's built-in modules
+The build script (`scripts/build-win.mjs`) and the executable stamper (`scripts/stamp-exe.mjs`)
+use only the Bun toolchain, Node's built-in modules
 and the project's own code.
 
 ## 3. Services

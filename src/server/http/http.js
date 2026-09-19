@@ -105,6 +105,36 @@ export function clearCookie(name = 'dentiva_session', { sameSite = 'Strict' } = 
   return `${name}=; Path=/; HttpOnly; SameSite=${sameSite}${sameSite === 'None' ? '; Secure' : ''}; Max-Age=0`;
 }
 
+/**
+ * Build a `Content-Disposition` value for a download.
+ *
+ * HTTP header values are bytes, not text, so a clinic file named
+ * `রোগীর_এক্সরে.png` cannot go into one directly — the fetch/Bun header parser
+ * rejects it and the download fails with a 500. RFC 6266 defines the fix and it
+ * is used here: an ASCII-only `filename` fallback every client understands, plus
+ * `filename*=UTF-8''…` carrying the real name, which browsers prefer.
+ *
+ * @param {'inline'|'attachment'} kind
+ * @param {string} name
+ */
+export function contentDisposition(kind, name) {
+  const cleaned = String(name ?? '').replace(/["\\\u0000-\u001f\u007f]/g, '').trim();
+  // Latin-1 is what a header may hold; anything else becomes a placeholder in
+  // the fallback and survives in the RFC 5987 parameter.
+  const ascii = cleaned
+    .replace(/[^\u0020-\u007e]/g, '_')
+    .replace(/[^\w.\- ]+/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120);
+  const fallback = ascii && /[A-Za-z0-9]/.test(ascii) ? ascii : 'attachment';
+  const encoded = encodeURIComponent(cleaned)
+    .replace(/['()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`)
+    .slice(0, 600);
+  const plain = `${kind}; filename="${fallback}"`;
+  return encoded && encoded !== fallback ? `${plain}; filename*=UTF-8''${encoded}` : plain;
+}
+
 /** Convert anything thrown by a service into a stable JSON error envelope. */
 export function errorResponse(error, { log = true } = {}) {
   if (error instanceof AppError) {

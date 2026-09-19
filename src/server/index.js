@@ -207,6 +207,16 @@ export function createApp(options) {
         if (result.sessionCookie) {
           headers['set-cookie'] = sessionCookie(result.sessionCookie, cookieOptions);
         }
+        // Most routes answer with plain data, which is wrapped here. A few hand
+        // back a `Response` of their own — the attachment viewer streams a file
+        // with its own content type, length and disposition — and those must be
+        // passed through: JSON-encoding them would send `{}` instead of the file.
+        if (result instanceof Response) {
+          if (!Object.keys(headers).length) return result;
+          const merged = new Headers(result.headers);
+          for (const [key, value] of Object.entries(headers)) merged.set(key, value);
+          return new Response(result.body, { status: result.status, statusText: result.statusText, headers: merged });
+        }
         return json(result, { headers });
       }
 

@@ -92,13 +92,16 @@ bun run verify:artifacts   # release gate: checksums, PE headers, archive conten
 ### Building the Windows executable
 
 ```bash
-bun run build:win          # gates → icon → embedded assets → compile → PE checks → zip + SHA256
+bun run build:win          # gates → icon → embedded assets → compile → stamp icon+version → PE checks → zip + SHA256 → verify:artifacts
 bun run build:win:fast     # same, skipping the test gates
+bun run verify:exe         # what the executable carries: icon sizes, version information, manifest
 ```
 
 The build cross-compiles for `bun-windows-x64`, patches the PE subsystem from console to
-**Windows GUI** (so no console window appears) and verifies the DOS/PE headers, machine type
-and embedded payload before writing the archive and checksums.
+**Windows GUI** (so no console window appears), rewrites the `.rsrc` section so the file carries
+Dentiva's own icon (16–256 px) and version information instead of the compiler's, and verifies the
+DOS/PE headers, machine type, resources and embedded payload before writing the archive and
+checksums. `bun run verify:artifacts` re-checks all of it, and fails the build if any of it drifts.
 
 ---
 
@@ -119,12 +122,16 @@ docs/                install, user guide, security, data model, architecture, de
 
 Everything in the release archive was produced by the commands above in this repository:
 
-* `bun test tests/` — 135 pass, 0 fail (2,308 assertions)
+* `bun test tests/` — 148 pass, 0 fail (2,734 assertions)
 * `bun x tsc --noEmit` — clean
 * `bun run lint:i18n` — 1,691 strings in each language, 933 referenced keys resolved
 * `bun run qa:renderer` — 41 routes, 0 failures, 0 console errors
-* `bun run verify:artifacts` — checksums, PE headers, archive contents and payload agree; no
-  synthetic data in either artifact
+* `bun run qa:packaged` — 26/26 checks against a running instance: setup, clinical records, billing,
+  inventory, attachments, printed documents, reports, backup → verify → restore and the audit trail
+* `bun run verify:exe` — the executable carries Dentiva's icon at every size, its version
+  information and its manifest, with no trace of the compiler's identity
+* `bun run verify:artifacts` — checksums, PE headers, executable identity, archive contents and
+  payload agree; no synthetic data in either artifact
 * `bun run qa:large` — 1,500 patients: paging, search, dashboard, four reports and the inventory
   report inside their budgets; the page walk returns every patient exactly once
 

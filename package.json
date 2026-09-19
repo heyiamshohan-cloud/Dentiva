@@ -30,7 +30,10 @@
     "seed:synthetic": "bun scripts/seed-synthetic.mjs",
     "qa:renderer": "bun scripts/qa-renderer.mjs",
     "qa:large": "bun test tests/qa/large-data.test.js",
+    "qa:packaged": "bun scripts/qa-packaged.mjs",
     "build:win": "bun scripts/build-win.mjs",
+    "stamp:exe": "bun scripts/stamp-exe.mjs",
+    "verify:exe": "bun scripts/stamp-exe.mjs --check",
     "build:win:fast": "bun scripts/build-win.mjs --skip-tests",
     "verify:artifacts": "bun scripts/verify-artifacts.mjs"
   },

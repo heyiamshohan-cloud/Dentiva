@@ -894,6 +894,9 @@ export function reportHtml(db, ctx, { report, clinic, settings, titleKey }) {
 
 /** Paper size resolution shared by the document routes. */
 export function paperFor(settings, key = 'print.defaultPaper') {
+  // `PAPER_SIZES` holds objects, so this has to compare codes: comparing the
+  // value against the array silently answered "A4" for every choice, which is
+  // how an A5 or 80 mm thermal receipt came out as an A4 page.
   const value = settings?.[key] ?? 'A4';
-  return PAPER_SIZES.includes(value) ? value : 'A4';
+  return PAPER_SIZES.some((paper) => paper.code === value) ? value : 'A4';
 }

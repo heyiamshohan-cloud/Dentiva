@@ -157,7 +157,15 @@ the scheduled time. Runs and failures are audited and announced once in the noti
 | Localization | `bun run lint:i18n` | no missing or orphaned string |
 | Renderer | `bun run qa:renderer` | 41 routes rendered against a live server, zero console errors |
 | Large data | `bun run qa:large` | paging, search, reports and inventory at 1,500 patients |
-| Packaging | `bun scripts/build-win.mjs` | gates, asset embedding, PE verification, archive + SHA-256 |
+| End-to-end | `bun run qa:packaged` | the running application put through a full clinic workflow over its own API |
+| Packaging | `bun scripts/build-win.mjs` | gates, asset embedding, icon + version stamping, PE verification, archive + SHA-256, artifact gate |
+| Executable identity | `bun run verify:exe` | icon at every size, version information, manifest, no compiler identity |
+| Artifacts | `bun run verify:artifacts` | checksums, PE headers, executable identity, archive contents, no synthetic data |
+
+`resources/ci/release-windows.yml` runs all of them on a Windows runner and adds the checks that
+only Windows can answer: `DENTIVA.exe --self-test`, the installer → shortcut → uninstall path, the
+portable layout, the packaged QA run against the executable, Edge rendering the application for
+real, and a Defender scan recorded as evidence.
 
 ## Repository conventions
 

@@ -8,7 +8,8 @@
  *   dist/SHA256SUMS.txt                             checksums for everything above
  *
  * Steps: quality gates → icon → embedded assets → compile for bun-windows-x64 →
- * stamp version information and the icon into the PE file → verify → package.
+ * stamp version information and the icon into the PE file → verify → package →
+ * checksums → verify the packaged artifacts (`scripts/verify-artifacts.mjs`).
  *
  *   bun run build:win                full build with tests
  *   bun run build:win --skip-tests   faster build while iterating
@@ -19,6 +20,7 @@ import { basename, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { APP_CREATOR_EMAIL, APP_CREATOR_WHATSAPP, APP_NAME, APP_PUBLISHER, APP_TAGLINE, APP_VERSION, BUILD_NUMBER, SCHEMA_VERSION } from '../src/shared/constants.js';
+import { describeProduct } from './lib/product-metadata.mjs';
 import { createZip } from '../src/server/domain/zip.js';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -108,16 +110,15 @@ log(`  ${EXE} — ${bytes(statSync(exePath).size)}`);
 
 /* -------------------------------------------------- version info + PE icon */
 
-step('Windows metadata');
+step('Windows metadata (icon and version information)');
+// Bun writes the resource section itself when the build runs on Windows; the
+// stamper then rewrites it from the same sources, so a cross-compiled image and
+// a native one carry byte-identical resources. Without it the file would keep
+// `bun.exe`'s icon and show "Oven" as the publisher in Explorer.
 const iconFile = join(ROOT, 'resources/icon.ico');
-const iconSizes = existsSync(iconFile) ? readFileSync(iconFile).readUInt16LE(4) : 0;
-if (shellMetadata.length) {
-  log(`  product ${APP_NAME} ${APP_VERSION}.${BUILD_NUMBER} · publisher ${APP_PUBLISHER} · icon (${iconSizes} sizes) embedded`);
-} else {
-  log('  cross-compiled image: no product metadata or icon resource inside the .exe.');
-  log('  The installer puts the Dentiva icon on the shortcuts; run `bun run build:win`');
-  log('  on Windows to embed both in the executable itself.');
-}
+if (!existsSync(iconFile)) throw new Error('resources/icon.ico is missing — run `bun run icon` first');
+run(process.execPath, ['scripts/stamp-exe.mjs', exePath]);
+log(`  ${describeProduct()} · icon ${readFileSync(iconFile).readUInt16LE(4)} sizes`);
 
 /* ------------------------------------------------------------------- verify */
 
@@ -223,6 +224,11 @@ const manifest = artifacts
   .join('\n');
 writeFileSync(join(DIST, 'SHA256SUMS.txt'), `${manifest}\n`);
 artifacts.push(join(DIST, 'SHA256SUMS.txt'));
+
+/* ------------------------------------------------------- artifact gate */
+
+step('Verifying the packaged artifacts');
+run(process.execPath, ['scripts/verify-artifacts.mjs']);
 
 /* ------------------------------------------------------------------ cleanup */
 

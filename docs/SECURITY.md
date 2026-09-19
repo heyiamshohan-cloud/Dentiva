@@ -183,5 +183,7 @@ itself never phones home.
 
 Known limitations are listed honestly in [CHANGELOG.md](CHANGELOG.md). In particular, backups are
 not encrypted, the executable is not code-signed, and the Windows-specific paths (native message
-box, parent-console attach, shortcut icon) are verified by inspection and packaging checks on a
-Linux builder, not by running on Windows hardware.
+box, parent-console attach, the shortcut and Explorer icon) are verified by inspection, by the
+resource-level checks in `bun run verify:exe` / `bun run verify:artifacts`, and by
+`resources/ci/release-windows.yml` when it runs on a Windows machine — not by running on Windows
+hardware from this Linux builder.
