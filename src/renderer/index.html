@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>DENTIVA — Dental Practice Management System</title>
+    <link rel="stylesheet" href="/fonts/fonts.css" />
+    <link rel="stylesheet" href="/app/styles/app.css" />
+    <link rel="icon" href="/icon.png" />
+  </head>
+  <body class="booting">
+    <div id="boot">
+      <div class="boot-mark">D</div>
+      <p class="boot-text" data-i18n="app.loading">Loading…</p>
+    </div>
+
+    <div id="app" hidden>
+      <aside class="sidebar" id="sidebar">
+        <div class="brand">
+          <div class="brand-mark" id="brandMark">D</div>
+          <div class="brand-text">
+            <strong data-i18n="app.name">DENTIVA</strong>
+            <span id="brandClinic" class="muted small"></span>
+          </div>
+        </div>
+        <nav class="nav" id="nav" aria-label="Main"></nav>
+        <div class="sidebar-foot">
+          <button type="button" class="sidebar-toggle" id="sidebarToggle" title="Collapse sidebar">
+            <span aria-hidden="true">‹</span>
+          </button>
+          <span class="version" id="appVersion"></span>
+        </div>
+      </aside>
+
+      <div class="workspace">
+        <header class="topbar">
+          <button type="button" class="icon-button only-narrow" id="menuButton" aria-label="Menu">☰</button>
+          <div class="page-title">
+            <h1 id="pageTitle" data-i18n="nav.dashboard">Dashboard</h1>
+            <p id="pageSubtitle" class="muted small"></p>
+          </div>
+          <div class="topbar-actions">
+            <button type="button" class="icon-button" id="globalSearchButton" aria-label="Search" title="Search (Ctrl+K)">
+              <span aria-hidden="true">⌕</span>
+            </button>
+            <button type="button" class="icon-button" id="notificationsButton" aria-label="Notifications" title="Notifications">
+              <span aria-hidden="true">🔔</span>
+              <span class="badge" id="notificationBadge" hidden>0</span>
+            </button>
+            <button type="button" class="icon-button" id="languageButton" title="Language">
+              <span id="languageLabel">EN</span>
+            </button>
+            <button type="button" class="account-button" id="accountButton">
+              <span class="avatar" id="accountAvatar">A</span>
+              <span class="account-name" id="accountName">Administrator</span>
+            </button>
+          </div>
+        </header>
+
+        <main class="content" id="view" tabindex="-1"></main>
+      </div>
+
+      <div class="drawer" id="notificationsDrawer" hidden>
+        <div class="drawer-panel" role="dialog" aria-label="Notifications">
+          <header class="drawer-head">
+            <h2 data-i18n="notifications.title">Notifications</h2>
+            <div class="row-actions">
+              <button type="button" class="link" id="markAllRead" data-i18n="notifications.markAllRead">Mark all read</button>
+              <button type="button" class="icon-button" id="closeNotifications" aria-label="Close">✕</button>
+            </div>
+          </header>
+          <div class="drawer-body" id="notificationsList"></div>
+        </div>
+      </div>
+
+      <div class="menu" id="accountMenu" hidden>
+        <button type="button" data-action="profile" data-i18n="account.profile">My profile</button>
+        <button type="button" data-action="password" data-i18n="account.changePassword">Change password</button>
+        <button type="button" data-action="pin" data-i18n="account.pin">Transaction PIN</button>
+        <button type="button" data-action="sessions" data-i18n="account.sessions">Active sessions</button>
+        <button type="button" data-action="about" data-i18n="about.title">About Dentiva</button>
+        <button type="button" data-action="lock" data-i18n="account.lock">Lock screen</button>
+        <button type="button" data-action="logout" data-i18n="account.signOut">Sign out</button>
+      </div>
+    </div>
+
+    <div id="layers">
+      <div id="modals"></div>
+      <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+    </div>
+
+    <div id="lockScreen" class="lock-screen" hidden>
+      <div class="lock-card">
+        <div class="brand-mark large">D</div>
+        <h2 data-i18n="account.locked">Screen locked</h2>
+        <p class="muted" data-i18n="account.lockedHint">Enter your password to continue.</p>
+        <form id="unlockForm" class="stack">
+          <label>
+            <span data-i18n="account.password">Password</span>
+            <input type="password" name="password" autocomplete="current-password" required />
+          </label>
+          <p class="form-error" id="unlockError" hidden></p>
+          <div class="row-actions end">
+            <button type="button" class="ghost" id="unlockSignOut" data-i18n="account.signOut">Sign out</button>
+            <button type="submit" class="primary" data-i18n="account.unlock">Unlock</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <script type="module" src="/app/js/main.js"></script>
+  </body>
+</html>

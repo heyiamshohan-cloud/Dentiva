@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+
+# Build output / distributables (rebuild with `bun run build:win`)
+dist/
+out/
+build/
+*.tgz
+*.7z
+
+# Local runtime data (never commit clinic data, databases or attachments)
+data/
+*.dentiva-backup
+*.db
+*.db-wal
+*.db-shm
+logs/
+tmp/
+.cache/
+
+# Test / QA artifacts
+coverage/
+tests/**/__snapshots__/actual/
+qa-output/
+*.synthetic.json
+synthetic-data/
+
+# Editor / OS noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*~

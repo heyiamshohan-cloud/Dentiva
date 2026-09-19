@@ -1,0 +1,199 @@
+/**
+ * Tiny HTTP toolkit for the local API.
+ *
+ * The app talks to itself over a loopback HTTP server (no Electron, no remote
+ * calls). Everything here is deliberately dependency-free and strict: sized
+ * bodies, JSON in / JSON out, typed error mapping, and cookie helpers that only
+ * ever set `HttpOnly` + `SameSite=Strict` cookies.
+ */
+import { AppError, ValidationError } from '../../shared/errors.js';
+
+export const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' };
+
+export function json(data, init = {}) {
+  const status = init.status ?? 200;
+  const headers = new Headers(init.headers ?? {});
+  for (const [key, value] of Object.entries(JSON_HEADERS)) headers.set(key, value);
+  return new Response(JSON.stringify(data ?? null), { status, headers });
+}
+
+export function noContent(init = {}) {
+  return new Response(null, { status: 204, headers: init.headers ?? {} });
+}
+
+export function text(body, init = {}) {
+  const headers = new Headers(init.headers ?? {});
+  if (!headers.has('content-type')) headers.set('content-type', 'text/plain; charset=utf-8');
+  return new Response(body, { status: init.status ?? 200, headers });
+}
+
+export function html(body, init = {}) {
+  const headers = new Headers(init.headers ?? {});
+  headers.set('content-type', 'text/html; charset=utf-8');
+  headers.set('cache-control', 'no-store');
+  return new Response(body, { status: init.status ?? 200, headers });
+}
+
+/** Read a JSON body, guarding against oversized or malformed payloads. */
+export async function readJson(request, { limitBytes = 4 * 1024 * 1024 } = {}) {
+  const declared = Number(request.headers.get('content-length') ?? 0);
+  const tooLarge = () => new AppError('errors.payloadTooLarge', { code: 'payload_too_large', status: 413, messageKey: 'errors.payloadTooLarge' });
+  if (declared && declared > limitBytes) throw tooLarge();
+  const raw = await request.text();
+  if (raw.length > limitBytes) throw tooLarge();
+  if (!raw.trim()) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed === null || typeof parsed !== 'object') throw new Error('not an object');
+    return parsed;
+  } catch {
+    throw new ValidationError('errors.invalidJson', [{ field: 'body', key: 'errors.invalidJson' }]);
+  }
+}
+
+/** Read a multipart body with a hard cap (attachments go through this). */
+export async function readMultipart(request, { limitBytes = 64 * 1024 * 1024 } = {}) {
+  const declared = Number(request.headers.get('content-length') ?? 0);
+  if (declared && declared > limitBytes) {
+    throw new AppError('files.tooLarge', { code: 'file_error', status: 413, messageKey: 'files.tooLarge' });
+  }
+  return request.formData();
+}
+
+export function parseCookies(request) {
+  const header = request.headers.get('cookie');
+  /** @type {Record<string,string>} */
+  const cookies = {};
+  if (!header) return cookies;
+  for (const part of header.split(';')) {
+    const index = part.indexOf('=');
+    if (index === -1) continue;
+    const name = part.slice(0, index).trim();
+    if (!name) continue;
+    cookies[name] = decodeURIComponent(part.slice(index + 1).trim());
+  }
+  return cookies;
+}
+
+export function sessionCookie(token, { maxAgeSeconds = 12 * 3600, secure = false } = {}) {
+  const parts = [
+    `dentiva_session=${encodeURIComponent(token)}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Strict',
+    `Max-Age=${Math.max(0, Math.floor(maxAgeSeconds))}`,
+  ];
+  if (secure) parts.push('Secure');
+  return parts.join('; ');
+}
+
+export function clearCookie(name = 'dentiva_session') {
+  return `${name}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`;
+}
+
+/** Convert anything thrown by a service into a stable JSON error envelope. */
+export function errorResponse(error, { log = true } = {}) {
+  if (error instanceof AppError) {
+    const body = {
+      error: {
+        code: error.code,
+        message: error.message,
+        // The renderer translates `messageKey`; `message` is the developer
+        // string and is only shown when no translation is available.
+        messageKey: error.messageKey ?? 'errors.generic',
+        params: error.params ?? {},
+        status: error.status ?? 400,
+        details: error.details ?? null,
+      },
+    };
+    return json(body, { status: error.status ?? 400 });
+  }
+  if (log) console.error('[dentiva] unhandled error:', error);
+  const message = error instanceof Error ? error.message : String(error);
+  return json({ error: { code: 'errors.internal', message, status: 500, details: null } }, { status: 500 });
+}
+
+/**
+ * Match a pathname against a `:param` style pattern.
+ * @returns {Record<string,string>|null}
+ */
+export function matchPath(pattern, pathname) {
+  const patternParts = pattern.split('/').filter(Boolean);
+  const pathParts = pathname.split('/').filter(Boolean);
+  if (patternParts.length !== pathParts.length) return null;
+  /** @type {Record<string,string>} */
+  const params = {};
+  for (let index = 0; index < patternParts.length; index += 1) {
+    const patternPart = patternParts[index];
+    const pathPart = pathParts[index];
+    if (patternPart.startsWith(':')) {
+      params[patternPart.slice(1)] = decodeURIComponent(pathPart);
+      continue;
+    }
+    if (patternPart !== pathPart) return null;
+  }
+  return params;
+}
+
+/**
+ * Ordered route table.
+ * @typedef {{ method: string|string[], path: string, handler: Function, permission?: string|null, description?: string }} Route
+ */
+export class Router {
+  /** @param {Route[]} routes */
+  constructor(routes) {
+    this.routes = routes;
+  }
+
+  match(method, pathname) {
+    for (const route of this.routes) {
+      const methods = Array.isArray(route.method) ? route.method : [route.method];
+      if (!methods.includes(method)) continue;
+      const params = matchPath(route.path, pathname);
+      if (params) return { route, params };
+    }
+    return null;
+  }
+
+  /** Public description of every endpoint (used by the About → diagnostics panel). */
+  describe() {
+    return this.routes.map((route) => ({
+      method: Array.isArray(route.method) ? route.method.join('|') : route.method,
+      path: route.path,
+      permission: route.permission ?? null,
+      description: route.description ?? null,
+    }));
+  }
+}
+
+/** Query string → plain object, with numbers coerced on demand by services. */
+export function queryObject(url) {
+  /** @type {Record<string,string|boolean>} */
+  const out = {};
+  for (const [key, value] of url.searchParams.entries()) {
+    if (value === 'true') out[key] = true;
+    else if (value === 'false') out[key] = false;
+    else out[key] = value;
+  }
+  return out;
+}
+
+/**
+ * Read a positive integer path/query parameter.
+ * @param {Record<string, any>} params
+ * @param {string} [name]
+ * @param {{ required?: boolean, fallback?: number|null }} [options]
+ * @returns {number|null}
+ */
+export function intParam(params, name = 'id', { required = true, fallback = null } = {}) {
+  const raw = params?.[name];
+  if (raw === undefined || raw === null || raw === '') {
+    if (required) throw new ValidationError('errors.invalidArgument', [{ field: name, key: 'validation.required' }]);
+    return fallback;
+  }
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new ValidationError('errors.invalidArgument', [{ field: name, key: 'validation.invalidId' }]);
+  }
+  return value;
+}
