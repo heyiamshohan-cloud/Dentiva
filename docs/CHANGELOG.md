@@ -112,10 +112,10 @@ whole thing up — with no internet connection, no subscription and no demo data
 | `bun run lint:i18n` | 1,691 keys in en + bn, 933 referenced keys resolved |
 | `bun run qa:renderer` | 41 routes, 0 failures, 0 console errors |
 | `bun run qa:large` | 1,500 patients — every measured interaction inside budget |
-| `bun run qa:packaged` | 26/26 checks against a running instance: setup, clinical, billing, inventory, attachments, documents for every paper size, reports, backup → verify → restore, audit |
+| `bun run qa:packaged` | 27/27 checks against a running instance: setup, clinical, billing, inventory, attachments, documents for every paper size, a referral attachment, reports, backup → verify → restore, audit |
 | `bun scripts/build-win.mjs` | quality gates, icon and version resource stamped, PE verification, archive, checksums, `verify:artifacts` |
 | `bun run verify:exe` | Dentiva's icon (7 sizes) and version information are inside the executable; no compiler identity remains |
-| `resources/ci/release-windows.yml` | 22 steps on a Windows runner: native build, Explorer/PE/icon read-back, `--self-test`, packaged QA against the executable, Edge render + 100–200 % scaling, installer → uninstall with data kept, portable layout, Defender evidence, SHA-256 re-verification. **Not executed yet** — the automation account may not create workflow files, so it has to be copied into `.github/workflows/` once (see docs/DELIVERY-REPORT.md) |
+| `resources/ci/release-windows.yml` | 23 steps on a Windows runner: native build, Explorer/PE/icon read-back, `--self-test`, packaged QA against the executable, every document printed to PDF by Edge, Edge render + 100–200 % scaling, installer → uninstall with data kept, portable layout, Defender evidence, SHA-256 re-verification. **Not executed yet** — the automation account may not create workflow files, so it has to be copied into `.github/workflows/` once (see docs/DELIVERY-REPORT.md) |
 
 ### Defects found and fixed while packaging 1.0.0
 

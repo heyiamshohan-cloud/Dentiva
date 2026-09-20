@@ -114,9 +114,11 @@ jobs:
             # DENTIVA.exe is a Windows *GUI* subsystem program: PowerShell's call
             # operator does not wait for it, so everything here goes through
             # Start-Process and instance.json.
-            param([string]$Exe, [string]$Data)
+            param([string]$Exe, [string]$Data, [int]$Port = 0)
             New-Item -ItemType Directory -Force -Path $Data | Out-Null
-            $app = Start-Process -FilePath $Exe -ArgumentList '--no-window', '--quiet', '--data', $Data -PassThru
+            $arguments = @('--no-window', '--quiet', '--data', $Data)
+            if ($Port -gt 0) { $arguments += @('--port', "$Port") }
+            $app = Start-Process -FilePath $Exe -ArgumentList $arguments -PassThru
             $instanceFile = Join-Path $Data 'instance.json'
             $deadline = (Get-Date).AddSeconds(60)
             while (-not (Test-Path $instanceFile) -and (Get-Date) -lt $deadline) {
@@ -340,11 +342,97 @@ jobs:
           $exe = 'dist\windows\DENTIVA.exe'
           $instance = Start-Dentiva -Exe $exe -Data $env:QA_DATA
           try {
-            bun scripts/qa-packaged.mjs --data $env:QA_DATA --report qa-report.json
+            bun scripts/qa-packaged.mjs --data $env:QA_DATA --report qa-report.json --documents qa-documents
             if ($LASTEXITCODE -ne 0) { throw "packaged QA failed with exit code $LASTEXITCODE" }
           } finally {
             Stop-Dentiva -Exe $exe -Data $env:QA_DATA -Logs $env:QA_DATA
           }
+
+      - name: Every print document as a PDF (the browser's own print engine)
+        shell: pwsh
+        run: |
+          # The clinic's "Save as PDF" goes through the browser's print engine, so
+          # this converts the exact HTML the application served (captured by the
+          # packaged QA run, with the stylesheet pointing back at the running
+          # application) into PDF with Edge/Chromium and checks the result.
+          #
+          # Hard checks: a PDF is produced for every one of the twelve document
+          # kinds and the six paper choices, it is a real PDF (header, trailer,
+          # page object) and it is not empty.
+          # Recorded, and reported loudly but not fatal: the MediaBox the engine
+          # chose. Physical paper selection is the print dialog's job, and the
+          # `@page` rule itself is asserted against the served documents in the
+          # packaged QA step.
+          #
+          # No physical printer is used or claimed.
+          . $PROFILE.CurrentUserAllHosts
+          $edge = Get-DentivaEdge
+          if (-not $edge) { Write-Host '::warning::Microsoft Edge is not installed on this runner — PDF checks skipped'; exit 0 }
+          $source = 'qa-documents'
+          if (-not (Test-Path $source)) { Write-Host '::error::the packaged QA step did not capture the documents'; exit 1 }
+          $outputs = 'qa-pdfs'
+          New-Item -ItemType Directory -Force -Path $outputs | Out-Null
+          # The captured documents load the bundled Inter/Bengali stylesheet from
+          # the running application (that is how the printed page gets its
+          # fonts), so the released executable is started again on the same port
+          # for the duration of this step.
+          $exe = 'dist\windows\DENTIVA.exe'
+          $first = Get-ChildItem (Join-Path $source '*.html') | Select-Object -First 1
+          $port = 0
+          if ($first -and ((Get-Content $first.FullName -Raw) -match 'http://127\.0\.0\.1:(\d+)/')) { $port = [int]$Matches[1] }
+          if ($port -eq 0) { Write-Host '::warning::the captured documents carry no application URL — the PDFs will use fallback fonts' }
+          $instance = Start-Dentiva -Exe $exe -Data $env:QA_DATA -Port $port
+          Write-Host "  documents were served by port $port, the application is running on $($instance.port)"
+          if ($port -ne 0 -and [int]$instance.port -ne $port) { Write-Host "::warning::the application came up on $($instance.port) instead of $port — fonts may fall back" }
+          $profile = Join-Path $env:TEMP 'dentiva-edge-pdf'
+          # A4 210x297, A5 148x210, Letter 216x279, Legal 216x356, 80 mm and 58 mm
+          # roll widths at 297 mm of page height, in PDF points (1 pt = 1/72 in).
+          $expected = @{ A4 = @(595, 842); A5 = @(420, 595); Letter = @(612, 792); Legal = @(612, 1008); Receipt80 = @(227, 842); Receipt58 = @(164, 842) }
+          $problems = @()
+          $mismatches = @()
+          $made = 0
+          try {
+          foreach ($file in Get-ChildItem (Join-Path $source '*.html') | Sort-Object Name) {
+            $pdf = Join-Path $outputs ($file.BaseName + '.pdf')
+            $url = 'file:///' + $file.FullName.Replace('\', '/')
+            & $edge --headless=new --disable-gpu --no-first-run --no-pdf-header-footer `
+                    --user-data-dir="$profile" --virtual-time-budget=20000 `
+                    --print-to-pdf="$pdf" $url 2>$null | Out-Null
+            if (-not (Test-Path $pdf)) { $problems += "the $($file.BaseName) document produced no PDF"; continue }
+            $bytes = [IO.File]::ReadAllBytes($pdf)
+            $text = [Text.Encoding]::ASCII.GetString($bytes)
+            if (-not $text.StartsWith('%PDF-')) { $problems += "$($file.BaseName): the output is not a PDF"; continue }
+            if (-not $text.Contains('%%EOF')) { $problems += "$($file.BaseName): the PDF has no trailer"; continue }
+            if (-not ($text -match '/Type\s*/Page[^s]')) { $problems += "$($file.BaseName): the PDF has no page object"; continue }
+            if ($bytes.Length -lt 5000) { $problems += "$($file.BaseName): the PDF is only $($bytes.Length) bytes"; continue }
+            $made++
+            $box = 'not reported by this engine'
+            if ($text -match '/MediaBox\s*\[\s*0(?:\.0+)?\s+0(?:\.0+)?\s+([\d.]+)\s+([\d.]+)') {
+              $width = [double]$Matches[1]; $height = [double]$Matches[2]
+              $box = "$([math]::Round($width)) x $([math]::Round($height)) pt"
+              if ($file.BaseName -like 'paper-*') {
+                $paper = $file.BaseName.Replace('paper-', '')
+                if ($expected.ContainsKey($paper)) {
+                  $want = $expected[$paper]
+                  $fits = ([math]::Abs($width - $want[0]) -le 3) -and ([math]::Abs($height - $want[1]) -le 3)
+                  if (-not $fits) { $mismatches += "$paper is $box, the sheet is $($want[0]) x $($want[1]) pt" }
+                  else { $box = "$box (matches $paper)" }
+                }
+              }
+            }
+            Write-Host ("  {0,-22} {1,8} bytes  {2}" -f $file.BaseName, $bytes.Length, $box)
+          }
+          } finally {
+            Stop-Dentiva -Exe $exe -Data $env:QA_DATA -Logs $env:QA_DATA
+          }
+          Write-Host ''
+          Write-Host "  $made document PDFs written to $outputs"
+          if ($mismatches.Count) {
+            Write-Host "::warning::the print engine chose a different sheet than the @page rule asked for (physical paper is chosen by the print dialog):"
+            $mismatches | ForEach-Object { Write-Host "  - $_" }
+          }
+          if ($problems.Count) { $problems | ForEach-Object { Write-Host "::error::PDF: $_" }; exit 1 }
+          Write-Host 'Every document and every paper choice produced a real PDF. No physical printer was involved.'
 
       - name: Real-renderer smoke test (Edge, headless)
         shell: pwsh
@@ -543,6 +631,8 @@ jobs:
             dist/*.zip
             dist/SHA256SUMS.txt
             qa-report.json
+            qa-pdfs/*.pdf
+            qa-documents/*.html
             render-dom.html
             scaling-*.html
             resource-report.txt
@@ -568,6 +658,22 @@ jobs:
             $lines += ''
             $lines += "Packaged QA: **$($qa.passed)/$($qa.checks.Count) checks passed** against the running executable."
           }
+          $lines += ''
+          $lines += '### Windows-only checks performed in this run'
+          $lines += ''
+          $lines += '| check | evidence |'
+          $lines += '| --- | --- |'
+          $lines += '| native Windows build, PE headers, Explorer metadata, version resource | PE + metadata step, `resource-report.txt` |'
+          $lines += '| icon extraction at 16–256 px | icon step, `resource-report.txt` |'
+          $lines += '| `DENTIVA.exe --self-test` (ok / 1.0.0 / build 100 / schema 10) on a clean folder | self-test step |'
+          $lines += '| first-run setup, sign-in, permissions, clinical → billing → inventory → reports → backup → restore | `qa-report.json` |'
+          $lines += '| every print document and paper choice as a PDF | `qa-pdfs/`, `qa-documents/` |'
+          $lines += '| real Edge rendering, 100–200 % scaling, 1024×768 → 2560×1440 | `render-dom.html`, `scaling-*.html` |'
+          $lines += '| installer, Start Menu/desktop shortcut, registry entry, uninstall with data kept, portable mode | installer step |'
+          $lines += '| Defender scan (recorded), Authenticode status (recorded) | `defender-scan.log`, `signature-status.txt` |'
+          $lines += '| SHA-256 of every published artifact re-verified on Windows | artifact step |'
+          $lines += ''
+          $lines += 'Not covered by this workflow: printing on a **physical printer** (none is available to the runner — no such claim is made) and code signing (no certificate is used; the executable is unsigned and SmartScreen may warn).
           $lines -join "`n" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
 
       - name: Publish the release

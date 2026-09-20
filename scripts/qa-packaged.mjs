@@ -21,7 +21,7 @@
  * Exit code 0 only when every check passed. `--report` writes the full result as
  * JSON for the release evidence.
  */
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
 import { join, resolve } from 'node:path';
 
@@ -41,6 +41,7 @@ const flag = (name, fallback = null) => {
 const dataDir = flag('data');
 const explicitUrl = flag('url');
 const reportPath = flag('report');
+const documentsDir = flag('documents');
 const quiet = args.includes('--quiet');
 const keep = args.includes('--keep');
 const timeoutMs = Number(flag('timeout', '30000'));
@@ -49,6 +50,25 @@ const expect = {
   build: Number(flag('expect-build', '100')),
   schema: Number(flag('expect-schema', '10')),
 };
+
+/**
+ * Save the exact HTML the print engine receives, so a real browser (Edge on the
+ * Windows runner) can turn it into a PDF and prove the print path end to end.
+ * The stylesheet link is rewritten to an absolute URL: opening the saved file
+ * still loads the bundled Inter/Bengali fonts from the running application.
+ *
+ * @param {string} name  file name without extension
+ * @param {string} html
+ */
+function saveDocumentHtml(name, html) {
+  if (!documentsDir) return;
+  const absolute = html.replace(/(href|src)="\//g, `$1="${origin}/`);
+  mkdirSync(resolve(documentsDir), { recursive: true });
+  const target = resolve(join(documentsDir, `${name}.html`));
+  writeFileSync(target, absolute);
+  capturedDocuments.push(`${name}.html`);
+}
+const capturedDocuments = [];
 
 /** A real 1×1 PNG, so the attachment goes through the same allow-list as a photo. */
 const PNG = Buffer.from(
@@ -386,6 +406,7 @@ await check('registers a patient with a Bengali name and reads Patient 360', asy
   assert(detail.payload.medical?.flags?.diabetes === true, 'the diabetes flag is not visible in Patient 360');
   assert(String(detail.payload.medical?.conditions ?? '').includes('Diabetes'), 'the medical condition text is missing');
   assert(detail.payload.age > 0, 'the age was not derived from the date of birth');
+  assert(detail.payload.gender === 'male', `the gender came back as ${detail.payload.gender}`);
 
   const list = await api(`/api/patients?search=${encodeURIComponent('রফিকুল')}`, { expect: 200 });
   assert(list.payload.total >= 1, 'the Bengali name is not findable in the register');
@@ -641,6 +662,25 @@ await check('refuses a traversal file name and a disallowed extension', async ()
   return { traversal: attempt.status, executable: refused.status };
 }, ['patientId']);
 
+await check('files an attachment against a referral', async () => {
+  // Every clinical record can carry files, not only the patient: a referral
+  // letter, a scan or a consent form belongs to the record it was made for.
+  const form = new FormData();
+  form.append('file', new File([PDF], 'referral-letter.pdf', { type: 'application/pdf' }));
+  form.append('patient_id', String(state.patientId));
+  form.append('referral_id', String(state.referralId));
+  form.append('category', 'referral');
+  form.append('title', 'Referral letter');
+  const uploaded = await api('/api/attachments', { method: 'POST', form, expect: 200 });
+  const listed = await api(`/api/attachments?referralId=${state.referralId}`, { expect: 200 });
+  const rows = listed.payload.rows ?? [];
+  assert(rows.some((row) => Number(row.id) === Number(uploaded.payload.id)), 'the referral attachment is not listed under the referral');
+  const back = await apiRaw(`/api/attachments/${uploaded.payload.id}/content`);
+  assert(back.status === 200, `the referral attachment could not be read back (${back.status})`);
+  note(`referral ${state.referralId} · attachment ${uploaded.payload.id} (${uploaded.payload.sizeBytes} bytes)`);
+  return uploaded.payload.id;
+}, ['patientId', 'referralId']);
+
 await check('stores a PDF report attachment', async () => {
   const form = new FormData();
   form.append('file', new File([PDF], 'lab-report.pdf', { type: 'application/pdf' }));
@@ -682,6 +722,7 @@ await check('prints all twelve document kinds', async () => {
     assert(html.length > 500, `the ${kind} document is only ${html.length} characters`);
     assert(/Dentiva|QA Clinic/.test(html), `the ${kind} document carries no clinic identity`);
     assert(!/\{\{|\bundefined\b|\[object Object\]/.test(html), `the ${kind} document contains unresolved placeholders`);
+    saveDocumentHtml(kind, html);
     printed.push(`${kind} ${html.length}B`);
   }
   note(printed.join(' · '));
@@ -703,12 +744,14 @@ await check('lays the documents out for every paper size the clinic can choose',
     await api('/api/settings', { method: 'PUT', expect: 200, body: { settings: { 'print.defaultPaper': setting } } });
     const html = await (await apiRaw(`/documents/invoice/${state.invoiceId}`)).text();
     assert(new RegExp(`@page\\s*\\{[^}]*size:\\s*${css}`, 'i').test(html.replace(/\s+/g, ' ')), `${setting} did not reach the print stylesheet`);
+    saveDocumentHtml(`paper-${setting}`, html);
     seen.push(setting);
   }
   for (const [setting, css] of [['Receipt80', '80mm auto'], ['Receipt58', '58mm auto']]) {
     await api('/api/settings', { method: 'PUT', expect: 200, body: { settings: { 'print.receiptPaper': setting } } });
     const html = await (await apiRaw(`/documents/receipt/${state.receiptId}`)).text();
     assert(html.replace(/\s+/g, ' ').includes(`size: ${css}`), `the ${setting} thermal layout did not apply`);
+    saveDocumentHtml(`paper-${setting}`, html);
     seen.push(setting);
   }
   // Orientation and margins travel the same path.
@@ -814,8 +857,15 @@ await check('the restored database still answers the dashboard and search', asyn
 /* ------------------------------------------------------------------ report */
 
 const summary = { passed, failed, skipped, total: results.length, checks: results };
+if (documentsDir && capturedDocuments.length) {
+  note(`${capturedDocuments.length} print documents saved to ${resolve(documentsDir)} for the PDF step`);
+}
+
 if (reportPath) {
-  writeFileSync(resolve(reportPath), `${JSON.stringify({ ...summary, origin, finishedAt: new Date().toISOString() }, null, 2)}\n`);
+  writeFileSync(
+    resolve(reportPath),
+    `${JSON.stringify({ ...summary, documents: capturedDocuments, origin, finishedAt: new Date().toISOString() }, null, 2)}\n`,
+  );
   note(`report written to ${resolve(reportPath)}`);
 }
 

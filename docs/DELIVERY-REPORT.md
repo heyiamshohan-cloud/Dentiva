@@ -4,6 +4,33 @@
 **Version:** 1.0.0 · **build:** 100 · **database schema:** v10 · **platform:** Windows 10/11 x64
 **Licence:** proprietary commercial (© 2026 Md. Shohan Khan) — see `LICENSE`
 **Report date:** 2026-09-20
+**Release status:** **NOT FINAL** — see §0
+
+---
+
+## 0. Release status: the Windows-native run is still outstanding
+
+Dentiva 1.0.0 is **not declared the final Windows release yet**. Everything that can be verified
+without a Windows machine *has* been verified (§3), and `resources/ci/release-windows.yml` is ready
+to perform the Windows-native verification — but that workflow **has not run yet**:
+
+* the pipeline file is in the repository at `resources/ci/release-windows.yml` and is also present in
+  the working tree as `.github/workflows/release-windows.yml`;
+* GitHub refuses to let the automation account push a file under `.github/workflows/` (it answers
+  `refusing to allow a GitHub App to create or update workflow … without 'workflows' permission`);
+  that restriction is **not** bypassed here — the repository owner pushes it;
+* once it is pushed and the workflow runs green, the results belong in §3 and the status changes to
+  *final*. Until then, every Windows-only item in §6 stays **not executed**.
+
+Run it with: **Actions → Build and verify the Windows release → Run workflow** (or push a `v1.0.0`
+tag, which triggers the same pipeline and publishes the release). The workflow builds DENTIVA.exe
+natively on Windows, verifies the icon and version resources from the file, runs `--self-test` on a
+clean folder, drives the packaged application end to end, converts every print document to PDF with
+Edge, checks rendering and scaling, installs and uninstalls the release with clinic data surviving,
+records a Defender scan, re-verifies every checksum and uploads all of it as evidence.
+
+**Legal status is unaffected: the executable is not code-signed, and no physical printer was
+available anywhere in this work — neither is claimed.**
 
 ---
 
@@ -88,7 +115,7 @@ final source tree. Nothing is estimated.
 | `bun run verify:artifacts` | checksums match, `MZ`/`PE`/x86-64/PE32+/GUI-subsystem verified, **all 7 icon frames byte-identical to `resources/icon.ico`, icon group complete, version resource byte-identical to `src/shared/constants.js`, application manifest preserved**, all 14 required archive entries present, archived exe identical to `dist/windows/DENTIVA.exe`, clinic catalogue and Bengali catalogue embedded, **no synthetic or demo data in either artifact** |
 | `bun src/main/entry.js --self-test` | `{ ok: true, version: 1.0.0, build: 100, schema: 10, migration: 10 }` |
 | `bun src/main/entry.js --version` | `Dentiva 1.0.0 (build 100, schema v10)` |
-| `bun scripts/qa-packaged.mjs --data <folder>` (the packaged QA harness, rehearsed **26/26 green** on a fresh data folder) | Drives the *running* application over its own HTTP API, exactly as the window does: launch token gate (a call without it is refused), first-run wizard (clinic, dentist, owner), wrong password refused, sign-in with 72 permissions, a patient with a Bengali name and Bengali address through Patient 360° (age, codes, allergies, medical alert flag, diabetes flag), register search in Bengali, appointment → queue → visit, dental chart on tooth 36, treatment, staged plan (400 000 minor units), prescription (2 items), referral, invoice with a line discount (700 000 minor units), part payment (due 500 000, status `partial`), invoice numbering never repeats, receivables, stock in/out (10.000 − 3.000 = 7.000), staff + payroll run + payslip paid, attachment upload/download/checksum with a unicode name, traversal and `.exe` refusals, PDF attachment, **all twelve print documents** (invoice, receipt, plan, prescription, visit, referral, statement, appointment slip, payslip, patient card, queue ticket, report), all 16 reports, CSV export, audit trail without secrets, backup → verify → export → restore with the patient, invoice and attachments intact afterwards |
+| `bun scripts/qa-packaged.mjs --data <folder>` (the packaged QA harness, rehearsed **27/27 green** on a fresh data folder) | Drives the *running* application over its own HTTP API, exactly as the window does: launch token gate (a call without it is refused), first-run wizard (clinic, dentist, owner), wrong password refused, sign-in with 72 permissions, a patient with a Bengali name and Bengali address through Patient 360° (age, gender, codes, allergies, medical alert flag, diabetes flag), register search in Bengali, appointment → queue → visit, dental chart on tooth 36, treatment, staged plan (400 000 minor units), prescription (2 items), referral, invoice with a line discount (700 000 minor units), part payment (due 500 000, status `partial`), invoice numbering never repeats, receivables, stock in/out (10.000 − 3.000 = 7.000), staff + payroll run + payslip paid, attachment upload/download/checksum with a unicode name, an attachment filed against the **referral**, traversal and `.exe` refusals, a PDF attachment, **all twelve print documents** (invoice, receipt, plan, prescription, visit, referral, statement, appointment slip, payslip, patient card, queue ticket, report), all 16 reports, CSV export, audit trail without secrets, backup → verify → export → restore with the patient, invoice and attachments intact afterwards. It also writes the twelve print documents and the six paper variants to `--documents <folder>`, which the Windows pipeline turns into PDFs with Edge |
 | `bun run seed:synthetic --patients 2000` | deterministic generator: 2,000 patients, 1,220 treatments, 989 invoices, 741 receipts in 20 s, stored in a throwaway folder with a delete reminder |
 
 ### Three defects found by the packaged QA and fixed
@@ -198,12 +225,13 @@ column is claimed as tested.
 | Installer: install → shortcuts → Apps & features → launch → uninstall (data-safe) | **Windows runner** | the workflow installs from the released archive, resolves the `.lnk` target and icon, reads the registry entry, runs the installed executable, writes a marker in `%LOCALAPPDATA%\Dentiva`, uninstalls and asserts the marker survived |
 | Portable mode from the archive | **Windows runner** | `install.ps1 -Portable`, then self-test asserting `dataDir` is beside the executable |
 | First-run setup (clinic, logo, currency, language, working hours, numbering, admin) | **Linux ✔** (API level) + renderer sweep | the QA harness completes the wizard (clinic, dentist, owner, currency `BDT`, locale) and reads the 93 settings back in 16 groups; the renderer sweep mounts the setup screen |
-| Clinical → billing → inventory → reports → backup → restore, end to end, with temporary data | **Linux ✔** | `bun run qa:packaged` — 26/26 checks; the data folder is temporary and never shipped (`verify:artifacts` fails on a synthetic marker) |
+| Clinical → billing → inventory → reports → backup → restore, end to end, with temporary data | **Linux ✔** | `bun run qa:packaged` — 27/27 checks; the data folder is temporary and never shipped (`verify:artifacts` fails on a synthetic marker) |
 | Patient 360° (all fields, long history) | **Linux ✔** | the harness asserts name, preferred name, code, age, allergies, medical alert flag, diabetes flag; `qa:large` exercises deep history at 1,500 patients |
 | File-system paths (AppData, Program Files, Documents, spaces, non-ASCII, removable) | **partly Linux, Windows runner for the rest** | `--data` and portable paths with spaces and non-ASCII are covered by the test suite and the harness; drive letters, `%LOCALAPPDATA%` and a removable drive are Windows-runner items |
 | Attachments (image/PDF, unicode and long names, rename/archive, traversal protection) | **Linux ✔** | upload/download/rename/archive, byte-for-byte and SHA-256 equality, RFC 5987 header for a Bengali name, `.exe` refused, traversal name neutralised, PDF served as an attachment |
-| Printing (A4/Letter/Legal/A5/thermal) | **Linux ✔ for the documents, no printer here** | every document is rendered with the clinic's paper settings (6 paper sizes, orientation, margins, scale) and asserted non-empty with no unresolved placeholders; **no physical printer was available and none is claimed** |
-| PDF for all 12 document kinds, EN + BN | **Linux ✔ for the rendered documents, no PDF engine** | the 12 server-rendered documents are asserted; "save as PDF" is Windows' own printer driver, so it is a Windows-runner/user step. Bangla text uses the embedded Noto Sans Bengali |
+| Printing (A4/Letter/Legal/A5/80 mm/58 mm thermal) | **partly Linux ✔, Windows runner for the PDFs; no printer anywhere** | every document is rendered with the clinic's paper settings and its `@page` rule (size, orientation, margins) asserted for all six paper choices; the Windows pipeline converts each document and each paper choice to a real PDF with Edge's print engine and records the sheet size the engine chose. **No physical printer was available and none is claimed** |
+| PDF for all 12 document kinds, EN + BN | **Linux ✔ for the served documents; the PDFs themselves are a Windows-runner step** | the 12 server-rendered documents are asserted (content, no placeholders, identity, `@page` per paper size) and captured to disk; the Windows pipeline prints every one of them to PDF with Edge and asserts a real PDF (header, trailer, page object, size). Bangla uses the bundled Noto Sans Bengali, which those captured documents request from the application itself |
+| Real Edge rendering of the application | **Windows runner** | the workflow renders the running application with Edge (DOM asserted, not just an HTTP 200) and repeats it across the scaling and window-size sweep; here the renderer sweep is jsdom only |
 | Bengali shaping everywhere | **Linux ✔ (renderer) / Windows runner (Edge)** | 1,691 strings in each language, fonts embedded; the jsdom sweep renders every screen with Bangla; the Edge check on the runner renders the real engine |
 | Light mode under a dark Windows theme | **by construction** | the theme is fixed in CSS with no dark-mode media query anywhere in the renderer; the workflow renders with Edge on the runner |
 | DPI 100/125/150/175/200 %, window 1280×720 → 2560×1440 | **Linux ✔ (layout) / Windows runner (real scaling)** | CSS breakpoints and the density setting are covered by the renderer sweep; physical scaling needs a Windows display |

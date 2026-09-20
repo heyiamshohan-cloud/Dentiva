@@ -217,7 +217,9 @@ The executable carries its own identity, so you can verify a copy without openin
   git push
   ```
 
-  Then open **Actions → Build and verify the Windows release → Run workflow**. The run rebuilds the
+  The file is already in the working tree at `.github/workflows/release-windows.yml`, so the
+  commands above commit exactly what the released pipeline runs. Then open
+  **Actions → Build and verify the Windows release → Run workflow**. The run rebuilds the
   executable natively, reads the icon and version resource back out, runs `--self-test`, drives the
   packaged application end to end, checks the installer and the uninstaller, records a Defender scan
   and publishes the artefacts with checksums — and its evidence is what a Windows-side verification
