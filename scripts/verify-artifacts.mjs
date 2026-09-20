@@ -140,8 +140,6 @@ console.log('\n▸ Executable identity');
     } else {
       fail('the icon group does not match the embedded icon sizes');
     }
-    // Windows' ExtractAssociatedIcon historically prefers id 1; ensure it exists.
-    if (!group.some((entry) => entry.id === 1)) notes.push('icon group id 1 missing — ExtractAssociatedIcon may fail on some GDI+ paths');
   }
 
   const expectedStrings = productVersionStrings();

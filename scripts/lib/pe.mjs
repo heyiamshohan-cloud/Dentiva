@@ -733,15 +733,12 @@ export function stampExecutable(buffer, { icon, versionInfo } = {}) {
     },
     {
       type: RT_GROUP_ICON,
-      // Windows' ExtractAssociatedIcon looks for the first icon group; using a
-      // numeric id (1) is the most compatible form (resource scripts use
-      // IDI_ICON 101 / 1, and some GDI+ paths ignore named groups). Keep the
-      // historic name as a second entry so Explorer's Details, verify:artifacts
-      // and the existing tests that expect IDI_MYICON continue to pass.
-      resources: [
-        { id: 1, language: 1033, data: buildIconGroup(images) },
-        { name: 'IDI_MYICON', language: 1033, data: buildIconGroup(images) },
-      ],
+      // Windows' ExtractAssociatedIcon and System.Drawing.Icon(path,size,size)
+      // historically look for a numeric group id (1 / MAINICON). A purely named
+      // group (IDI_MYICON) is ignored by some GDI+ builds, which caused the
+      // "Icon resources at every Windows size" gate to see a transparent icon.
+      // Use the standard numeric id so every Windows API finds the Dentiva icon.
+      resources: [{ id: 1, language: 1033, data: buildIconGroup(images) }],
     },
     {
       type: RT_VERSION,
