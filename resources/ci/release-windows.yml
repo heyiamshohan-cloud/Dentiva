@@ -464,7 +464,13 @@ jobs:
       - name: Icon resources at every Windows size
         shell: powershell
         run: |
-          $ErrorActionPreference = 'Stop'
+          # This is the one step that uses Windows PowerShell (5.1) rather than
+          # PowerShell 7: System.Drawing is the framework's own icon reader, and
+          # the runner injects $ErrorActionPreference = 'Stop' around every step.
+          # Errors are handled explicitly below, so preference is set to
+          # Continue: no stray non-terminating error may end this step with an
+          # exit code and nothing said.
+          $ErrorActionPreference = 'Continue'
           Add-Type -AssemblyName System.Drawing
 
           $exe = (Resolve-Path 'dist\windows\DENTIVA.exe').Path
@@ -530,26 +536,23 @@ jobs:
 
             $bitmap.Dispose()
 
-            # Two ways of asking for a size. The first reads the executable;
-            # the second rescales the icon the shell just handed over, which is
-            # how Explorer, the taskbar and the Start Menu actually produce the
-            # sizes they draw. Neither may hand back a blank image.
-            $gdiPlusGap = @()
-            $produced = @()
-
+            # Reading the executable the way a stand-alone .ico is read does not
+            # work and never did: System.Drawing.Icon(file, width, height) reads
+            # an .ico stream, not a PE resource directory. It is recorded for
+            # completeness and is not allowed to pass or fail anything.
             foreach ($size in 16, 24, 32, 48, 64, 128, 256) {
               try {
                 $sized = New-Object System.Drawing.Icon(
                   $exe,
                   $size,
                   $size
-                )
+                ) -ErrorAction Stop
 
                 $tile = $sized.ToBitmap()
                 $detail = Get-OpaqueSamples $tile
 
                 Write-Host (
-                  "  {0,3}px -> {1}x{2}, {3}/{4} sampled pixels opaque" -f `
+                  "  {0,3}px -> {1}x{2} read from the executable, {3}/{4} sampled pixels opaque" -f `
                   $size,
                   $tile.Width,
                   $tile.Height,
@@ -557,42 +560,33 @@ jobs:
                   $detail.Sampled
                 )
 
-                $script:report += "${size}px ${detail.Opaque}/${detail.Sampled}"
-                $produced += $size
-
-                if ($detail.Opaque -eq 0) {
-                  Write-Host "::error::ICON-GATE: the ${size}px icon frame is empty"
-                  exit 1
-                }
+                $script:report += "${size}px from file ${detail.Opaque}/${detail.Sampled}"
 
                 $tile.Dispose()
                 $sized.Dispose()
               }
               catch {
-                # System.Drawing.Icon(file, width, height) reads a stand-alone
-                # .ico stream; it does not read PE icon resources, so this is
-                # expected to fail for an executable and is recorded, not
-                # failed, provided the shell can produce the size (below).
                 $message = $_.Exception.Message
 
                 Write-Host (
-                  "  ${size}px - .NET cannot read PE icon resources: $message"
+                  "  ${size}px - not read from the executable path: $message"
                 )
 
                 $script:report += "${size}px not read from file ($message)"
-                $gdiPlusGap += $size
               }
             }
 
             # The check that matters: Windows has the mark, and every size it
-            # asks for comes back with something drawn on it.
+            # asks for comes back with something drawn on it. This is how
+            # Explorer, the taskbar and the Start Menu produce the sizes they
+            # draw - by rescaling the icon the shell extracted.
             foreach ($size in 16, 24, 32, 48, 64, 128, 256) {
               try {
                 $scaled = New-Object System.Drawing.Icon(
                   $icon,
                   $size,
                   $size
-                )
+                ) -ErrorAction Stop
 
                 $tile = $scaled.ToBitmap()
                 $detail = Get-OpaqueSamples $tile
@@ -607,9 +601,10 @@ jobs:
                 )
 
                 $script:report += "${size}px rescaled ${detail.Opaque}/${detail.Sampled}"
-                $produced += $size
 
                 if ($detail.Opaque -eq 0) {
+                  $tile.Dispose()
+                  $scaled.Dispose()
                   Write-Host "::error::ICON-GATE: the ${size}px icon rescales to nothing"
                   exit 1
                 }
@@ -624,26 +619,15 @@ jobs:
                   "  ${size}px - the extracted icon could not be rescaled: $message"
                 )
 
-                $script:report += "${size}px not rescaled ($message)"
+                Write-Host "::error::ICON-GATE: Windows could not produce the ${size}px icon: $message"
+                exit 1
               }
             }
 
             $icon.Dispose()
 
-            if ($gdiPlusGap.Count) {
-              Write-Host (
-                "  .NET/GDI+ cannot read PE icon resources from a file path " +
-                "($($gdiPlusGap -join ', ') px); those sizes were checked by " +
-                "rescaling the icon Windows extracted instead."
-              )
-            }
-
-            if (-not $produced.Count) {
-              Write-Host '::error::ICON-GATE: Windows could not produce the icon at any size'
-              exit 1
-            }
-
             Write-Host 'Icon resources load and are not blank.'
+            exit 0
           }
           catch {
             $detail = $script:report -join '; '
