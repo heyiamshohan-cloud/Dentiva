@@ -1,30 +1,5 @@
 name: Build and verify the Windows release
 
-# INSTALLING THIS WORKFLOW
-# Copy this file to .github/workflows/release-windows.yml.
-#
-# This workflow builds and verifies the real Dentiva Windows x64 release.
-#
-# It performs:
-#   1. quality gates
-#   2. native Windows build
-#   3. PE / VERSIONINFO / icon verification
-#   4. application self-test
-#   5. packaged end-to-end clinic QA
-#   6. PDF / print-engine verification
-#   7. real Edge rendering
-#   8. scaling/layout checks
-#   9. installer / shortcut / registry / uninstall checks
-#  10. portable-mode verification
-#  11. Defender evidence
-#  12. signing-status evidence
-#  13. release artifact upload
-#  14. GitHub Release publication
-#
-# Important:
-# runner.temp cannot be used in a job-level env block.
-# QA paths are therefore exported through GITHUB_ENV from a running pwsh step.
-
 on:
   workflow_dispatch:
     inputs:
@@ -73,11 +48,44 @@ jobs:
           Write-Host "Architecture: $env:PROCESSOR_ARCHITECTURE"
 
       - name: Quality gates (i18n, types, tests, renderer)
+        shell: pwsh
         run: |
-          bun scripts/check-i18n.mjs
-          bun x tsc --noEmit
-          bun test tests/
-          bun run qa:renderer
+          # Every gate has to stop the run, not just the last one: PowerShell
+          # only reports the exit code of the final command, which silently
+          # downgraded the earlier three to decoration.
+          $ErrorActionPreference = 'Continue'
+          $failed = @()
+
+          function Invoke-Gate {
+            param([string]$Name, [string]$Log, [scriptblock]$Body)
+
+            Write-Host "### $Name"
+            & $Body *> $Log
+            $code = $LASTEXITCODE
+            Get-Content $Log | Write-Host
+
+            if ($code -ne 0) {
+              $tail = ((Get-Content $Log -Tail 25) -join ' ~ ')
+              Write-Host "::error::$Name gate failed with exit code $code — $tail"
+              $script:failed += $Name
+            } else {
+              Write-Host "  $Name gate passed"
+            }
+
+            Write-Host ''
+          }
+
+          Invoke-Gate 'i18n' 'qa-i18n.log' { bun scripts/check-i18n.mjs }
+          Invoke-Gate 'typecheck' 'qa-typecheck.log' { bun x tsc --noEmit }
+          Invoke-Gate 'tests' 'qa-tests.log' { bun test tests/ }
+          Invoke-Gate 'renderer' 'qa-renderer.log' { bun run qa:renderer }
+
+          if ($failed.Count) {
+            Write-Host "::error::quality gates failed: $($failed -join ', ')"
+            exit 1
+          }
+
+          Write-Host 'All four quality gates passed.'
 
       - name: Build DENTIVA.exe, archive and checksums
         run: bun scripts/build-win.mjs --skip-tests
@@ -418,19 +426,20 @@ jobs:
       - name: Icon resources at every Windows size
         shell: powershell
         run: |
+          # This is the one step that uses Windows PowerShell (5.1) rather than
+          # PowerShell 7: System.Drawing is the framework's own icon reader, and
+          # the runner injects $ErrorActionPreference = 'Stop' around every step.
+          # Errors are handled explicitly below, so preference is set to
+          # Continue: no stray non-terminating error may end this step with an
+          # exit code and nothing said.
+          $ErrorActionPreference = 'Continue'
           Add-Type -AssemblyName System.Drawing
 
           $exe = (Resolve-Path 'dist\windows\DENTIVA.exe').Path
 
-          $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($exe)
-
-          if (-not $icon) {
-            Write-Host '::error::Windows could not extract an icon from the executable'
-            exit 1
-          }
-
-          Write-Host "  associated icon: $($icon.Width)x$($icon.Height)"
-          Write-Host '  expected sizes : 16, 24, 32, 48, 64, 128, 256'
+          # Every measurement is recorded so that a failure says *what* Windows
+          # saw, not just that something went wrong.
+          $script:report = @()
 
           function Get-OpaqueSamples($bitmap) {
             $opaque = 0
@@ -462,66 +471,134 @@ jobs:
             }
           }
 
-          $bitmap = $icon.ToBitmap()
-          $check = Get-OpaqueSamples $bitmap
+          try {
+            $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($exe)
 
-          Write-Host "  associated icon: $($check.Opaque)/$($check.Sampled) sampled pixels are opaque"
+            if (-not $icon) {
+              Write-Host '::error::ICON-GATE: Windows could not extract an icon from the executable'
+              exit 1
+            }
 
-          if ($check.Opaque -eq 0) {
-            Write-Host '::error::Windows loaded a completely transparent icon'
-            exit 1
-          }
+            Write-Host "  associated icon: $($icon.Width)x$($icon.Height)"
+            Write-Host '  expected sizes : 16, 24, 32, 48, 64, 128, 256'
+            $script:report += "associated $($icon.Width)x$($icon.Height)"
 
-          $gdiPlusGap = @()
+            $bitmap = $icon.ToBitmap()
+            $check = Get-OpaqueSamples $bitmap
 
-          foreach ($size in 16, 24, 32, 48, 64, 128, 256) {
-            try {
-              $sized = New-Object System.Drawing.Icon(
-                $exe,
-                $size,
-                $size
-              )
+            Write-Host "  associated icon: $($check.Opaque)/$($check.Sampled) sampled pixels are opaque"
+            $script:report += "associated opaque $($check.Opaque)/$($check.Sampled)"
 
-              $tile = $sized.ToBitmap()
-              $detail = Get-OpaqueSamples $tile
+            if ($check.Opaque -eq 0) {
+              $bitmap.Dispose()
+              $icon.Dispose()
+              Write-Host '::error::ICON-GATE: Windows loaded a completely transparent icon'
+              exit 1
+            }
 
-              Write-Host (
-                "  {0,3}px → {1}x{2}, {3}/{4} sampled pixels opaque" -f `
-                $size,
-                $tile.Width,
-                $tile.Height,
-                $detail.Opaque,
-                $detail.Sampled
-              )
+            $bitmap.Dispose()
 
-              if ($detail.Opaque -eq 0) {
-                Write-Host "::error::the ${size}px icon frame is empty"
+            # Reading the executable the way a stand-alone .ico is read does not
+            # work and never did: System.Drawing.Icon(file, width, height) reads
+            # an .ico stream, not a PE resource directory. It is recorded for
+            # completeness and is not allowed to pass or fail anything.
+            foreach ($size in 16, 24, 32, 48, 64, 128, 256) {
+              try {
+                $sized = New-Object System.Drawing.Icon(
+                  $exe,
+                  $size,
+                  $size
+                ) -ErrorAction Stop
+
+                $tile = $sized.ToBitmap()
+                $detail = Get-OpaqueSamples $tile
+
+                Write-Host (
+                  "  {0,3}px -> {1}x{2} read from the executable, {3}/{4} sampled pixels opaque" -f `
+                  $size,
+                  $tile.Width,
+                  $tile.Height,
+                  $detail.Opaque,
+                  $detail.Sampled
+                )
+
+                $script:report += "${size}px from file ${detail.Opaque}/${detail.Sampled}"
+
+                $tile.Dispose()
+                $sized.Dispose()
+              }
+              catch {
+                $message = $_.Exception.Message
+
+                Write-Host (
+                  "  ${size}px - not read from the executable path: $message"
+                )
+
+                $script:report += "${size}px not read from file ($message)"
+              }
+            }
+
+            # The check that matters: Windows has the mark, and every size it
+            # asks for comes back with something drawn on it. This is how
+            # Explorer, the taskbar and the Start Menu produce the sizes they
+            # draw - by rescaling the icon the shell extracted.
+            foreach ($size in 16, 24, 32, 48, 64, 128, 256) {
+              try {
+                $scaled = New-Object System.Drawing.Icon(
+                  $icon,
+                  $size,
+                  $size
+                ) -ErrorAction Stop
+
+                $tile = $scaled.ToBitmap()
+                $detail = Get-OpaqueSamples $tile
+
+                Write-Host (
+                  "  {0,3}px -> {1}x{2} rescaled, {3}/{4} sampled pixels opaque" -f `
+                  $size,
+                  $tile.Width,
+                  $tile.Height,
+                  $detail.Opaque,
+                  $detail.Sampled
+                )
+
+                $script:report += "${size}px rescaled ${detail.Opaque}/${detail.Sampled}"
+
+                if ($detail.Opaque -eq 0) {
+                  $tile.Dispose()
+                  $scaled.Dispose()
+                  Write-Host "::error::ICON-GATE: the ${size}px icon rescales to nothing"
+                  exit 1
+                }
+
+                $tile.Dispose()
+                $scaled.Dispose()
+              }
+              catch {
+                $message = $_.Exception.Message
+
+                Write-Host (
+                  "  ${size}px - the extracted icon could not be rescaled: $message"
+                )
+
+                Write-Host "::error::ICON-GATE: Windows could not produce the ${size}px icon: $message"
                 exit 1
               }
-
-              $tile.Dispose()
-              $sized.Dispose()
             }
-            catch {
-              Write-Host (
-                "  ${size}px — .NET could not decode this frame: $($_.Exception.Message)"
-              )
 
-              $gdiPlusGap += $size
-            }
+            $icon.Dispose()
+
+            Write-Host 'Icon resources load and are not blank.'
+            exit 0
           }
-
-          $bitmap.Dispose()
-          $icon.Dispose()
-
-          if ($gdiPlusGap.Count) {
+          catch {
+            $detail = $script:report -join '; '
             Write-Host (
-              "  .NET/GDI+ could not decode: $($gdiPlusGap -join ', ') px — " +
-              "these are PNG-compressed frames, checked by stamp-exe.mjs instead."
+              "::error::ICON-GATE: $($_.Exception.GetType().Name): $($_.Exception.Message) " +
+                "- measurements: $detail"
             )
+            exit 1
           }
-
-          Write-Host 'Icon resources load at every size and are not blank.'
 
       - name: Application self-test on a clean data folder
         shell: pwsh
