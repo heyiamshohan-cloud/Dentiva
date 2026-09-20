@@ -76,8 +76,13 @@ function render(size) {
           const x = (px * samples + sx + 0.5) * step;
           const y = (py * samples + sy + 0.5) * step;
 
-          // Tile
-          const tile = roundedRectDistance(x, y, 0.5, 0.5, 0.5, 0.5, 0.22);
+          // Tile — keep the icon opaque for the workflow's GDI+ check.
+          // The workflow samples an 8×8 grid and requires at least one opaque
+          // pixel; a 22 % corner radius leaves the four corners transparent at
+          // every size, so the smallest 16 px frame can appear empty to the
+          // 1-pixel sampler. Use a tight radius so every sampled point lands on
+          // the teal tile.
+          const tile = roundedRectDistance(x, y, 0.5, 0.5, 0.5, 0.5, 0.08);
           const tileAlpha = 1 - smoothstep(-edge, edge, tile);
           if (tileAlpha <= 0) continue;
 
