@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "note": "Dentiva — defaults applied when a clinic is created (first-run wizard) or when a database without a provisioning template is upgraded. Categories, appointment types, payment methods and diagnoses are reference data; the service catalogue is intentionally empty so no price is ever invented for a clinic. Edit this file to change what every new clinic starts with; patient data is never affected. `bun run seed:defaults` applies it to the current database.",
+  "expenseCategories": [
+    { "name_en": "Clinic rent", "name_bn": "ক্লিনিক ভাড়া", "sort_order": 10, "is_system": 0 },
+    { "name_en": "Chamber rent", "name_bn": "চেম্বার ভাড়া", "sort_order": 20, "is_system": 0 },
+    { "name_en": "Electricity", "name_bn": "বিদ্যুৎ বিল", "sort_order": 30, "is_system": 0 },
+    { "name_en": "Internet", "name_bn": "ইন্টারনেট", "sort_order": 40, "is_system": 0 },
+    { "name_en": "Water", "name_bn": "পানি", "sort_order": 50, "is_system": 0 },
+    { "name_en": "Staff salary", "name_bn": "কর্মীর বেতন", "sort_order": 60, "is_system": 1 },
+    { "name_en": "Dental materials", "name_bn": "ডেন্টাল ম্যাটেরিয়াল", "sort_order": 70, "is_system": 0 },
+    { "name_en": "Supplies", "name_bn": "সরবরাহ সামগ্রী", "sort_order": 80, "is_system": 0 },
+    { "name_en": "Equipment", "name_bn": "যন্ত্রপাতি", "sort_order": 90, "is_system": 0 },
+    { "name_en": "Maintenance", "name_bn": "মেরামত ও রক্ষণাবেক্ষণ", "sort_order": 100, "is_system": 0 },
+    { "name_en": "Marketing", "name_bn": "বিজ্ঞাপন ও প্রচার", "sort_order": 110, "is_system": 0 },
+    { "name_en": "Transportation", "name_bn": "যাতায়াত", "sort_order": 120, "is_system": 0 },
+    { "name_en": "Laboratory", "name_bn": "ল্যাবরেটরি", "sort_order": 130, "is_system": 0 },
+    { "name_en": "Miscellaneous", "name_bn": "বিবিধ", "sort_order": 140, "is_system": 0 }
+  ],
+  "incomeCategories": [
+    { "name_en": "Treatment income", "name_bn": "চিকিৎসা থেকে আয়", "sort_order": 10, "is_system": 1 },
+    { "name_en": "Consultation fee", "name_bn": "পরামর্শ ফি", "sort_order": 20, "is_system": 1 },
+    { "name_en": "Other income", "name_bn": "অন্যান্য আয়", "sort_order": 30, "is_system": 0 }
+  ],
+  "appointmentTypes": [
+    { "name_en": "Consultation", "name_bn": "পরামর্শ", "duration_minutes": 30, "color": "#0f6f9a", "sort_order": 10 },
+    { "name_en": "Follow-up", "name_bn": "ফলো-আপ", "duration_minutes": 15, "color": "#0d9488", "sort_order": 20 },
+    { "name_en": "Treatment / procedure", "name_bn": "চিকিৎসা / প্রক্রিয়া", "duration_minutes": 45, "color": "#7c3aed", "sort_order": 30 },
+    { "name_en": "Scaling / hygiene", "name_bn": "স্কেলিং / পরিচ্ছন্নতা", "duration_minutes": 30, "color": "#0891b2", "sort_order": 40 },
+    { "name_en": "Emergency", "name_bn": "জরুরি", "duration_minutes": 30, "color": "#dc2626", "sort_order": 50 }
+  ],
+  "inventoryCategories": [
+    { "name_en": "Consumables", "name_bn": "ভোগ্য সামগ্রী", "sort_order": 10 },
+    { "name_en": "Instruments", "name_bn": "যন্ত্রপাতি", "sort_order": 20 },
+    { "name_en": "Materials", "name_bn": "ম্যাটেরিয়াল", "sort_order": 30 },
+    { "name_en": "Medicines", "name_bn": "ঔষধ", "sort_order": 40 },
+    { "name_en": "Personal protective equipment", "name_bn": "ব্যক্তিগত সুরক্ষা সরঞ্জাম", "sort_order": 50 },
+    { "name_en": "Laboratory", "name_bn": "ল্যাবরেটরি", "sort_order": 60 },
+    { "name_en": "Other", "name_bn": "অন্যান্য", "sort_order": 70 }
+  ],
+  "paymentMethods": [
+    { "code": "cash", "name_en": "Cash", "name_bn": "নগদ", "requires_reference": 0, "is_system": 1, "sort_order": 10 },
+    { "code": "bank", "name_en": "Bank transfer", "name_bn": "ব্যাংক ট্রান্সফার", "requires_reference": 1, "is_system": 1, "sort_order": 20 },
+    { "code": "card", "name_en": "Card", "name_bn": "কার্ড", "requires_reference": 1, "is_system": 1, "sort_order": 30 },
+    { "code": "mfs", "name_en": "Mobile financial service", "name_bn": "মোবাইল ফিন্যান্সিয়াল সার্ভিস", "requires_reference": 1, "is_system": 1, "sort_order": 40 },
+    { "code": "other", "name_en": "Other", "name_bn": "অন্যান্য", "requires_reference": 0, "is_system": 1, "sort_order": 50 }
+  ],
+  "services": [],
+  "diagnoses": []
+}

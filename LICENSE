@@ -1,0 +1,32 @@
+Dentiva — Dental Practice Management System
+Copyright (c) 2026 Md. Shohan Khan. All rights reserved.
+
+PROPRIETARY COMMERCIAL SOFTWARE LICENSE
+
+This software and its source code are proprietary and confidential.
+Unauthorised copying, distribution, sub-licensing, reverse engineering,
+or use outside the terms granted by the copyright holder is prohibited.
+
+A written licence agreement is required for use, deployment, resale or
+redistribution of this software or any derivative work.
+
+Creator / licensor contact
+--------------------------
+  Md. Shohan Khan
+  Email    : helloiamshohan@gmail.com
+  WhatsApp : 01516591935
+
+THIRD-PARTY COMPONENTS
+----------------------
+Dentiva bundles third-party components that are licensed separately under
+their own permissive licences (MIT, BSD-3-Clause, Apache-2.0, SIL OFL 1.1).
+Those components remain the property of their respective copyright holders
+and are redistributed in compliance with their licence terms. The complete
+audit — including component names, versions, licences, and the notices that
+must accompany redistribution — is maintained in:
+
+  docs/DEPENDENCIES.md
+
+Redistributing a Dentiva build requires including the licence notices listed
+in that document (the application also displays them from its About screen and
+ships them inside every installer payload as THIRD-PARTY-NOTICES.txt).
