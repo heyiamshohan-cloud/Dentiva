@@ -316,6 +316,37 @@ export function verifyBackup(db, ctx, archivePath) {
 }
 
 /**
+ * Rename `from` over `to`, retrying while Windows still holds the file.
+ *
+ * SQLite has been closed by the time this runs, but Windows keeps a handle on a
+ * file for a moment after the last one is released — anything that has just
+ * been written is opened again by the platform's anti-malware scanner — and a
+ * rename that lands in that window fails with EPERM or EBUSY. That is a
+ * condition, not a fault: a restore is an exclusive, seconds-long operation, so
+ * waiting for the platform to let go is the right answer. If it never does, the
+ * real error is thrown rather than swallowed.
+ *
+ * @param {string} from
+ * @param {string} to
+ * @param {{ attempts?: number }} [options]
+ */
+function replaceFile(from, to, { attempts = 20 } = {}) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      renameSync(from, to);
+      return;
+    } catch (error) {
+      const code = error?.code;
+      const held = code === 'EPERM' || code === 'EBUSY' || code === 'EACCES';
+      if (!held || attempt >= attempts) throw error;
+      // 25 ms, 50 ms … up to 250 ms: long enough to outlast the scanner, short
+      // enough that a genuinely stuck file still fails quickly.
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(25 * attempt, 250));
+    }
+  }
+}
+
+/**
  * Restore a backup. The current database is snapshotted first so a failed or
  * regretted restore can be undone from the folder.
  */
@@ -350,12 +381,12 @@ export function restoreBackup(db, ctx, { archivePath, backupDir = null, dataDir 
   closeDatabase();
   if (hadDatabase) {
     try {
-      renameSync(databasePath, previousPath);
+      replaceFile(databasePath, previousPath);
     } catch {
       /* keep going: the staged copy is still written below */
     }
   }
-  renameSync(stagingPath, databasePath);
+  replaceFile(stagingPath, databasePath);
 
   const restoredDb = openDatabase(databasePath);
   let migration = null;
@@ -366,7 +397,7 @@ export function restoreBackup(db, ctx, { archivePath, backupDir = null, dataDir 
     closeDatabase();
     if (hadDatabase && existsSync(previousPath)) {
       rmSync(databasePath, { force: true });
-      renameSync(previousPath, databasePath);
+      replaceFile(previousPath, databasePath);
       openDatabase(databasePath);
     }
     throw error;

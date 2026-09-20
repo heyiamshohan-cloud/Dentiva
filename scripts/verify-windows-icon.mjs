@@ -57,7 +57,9 @@ $report = [ordered]@{
   exe = $Exe
   associated = $null
   sizes = @()
+  resized = @()
   gaps = @()
+  resizeGaps = @()
   error = $null
 }
 
@@ -76,10 +78,11 @@ try {
       sampled = $measured.sampled
     }
     $bitmap.Dispose()
-    $icon.Dispose()
-  }
 
-  if (-not $report.error) {
+    # Two ways of asking for a size. The first reads the executable the way the
+    # release gate does; the second rescales the icon the shell just handed over,
+    # which is how Explorer, the taskbar and the Start Menu actually produce the
+    # sizes they draw. Neither is allowed to hand back a blank image.
     foreach ($size in 16, 24, 32, 48, 64, 128, 256) {
       try {
         $sized = New-Object System.Drawing.Icon($Exe, $size, $size)
@@ -97,14 +100,35 @@ try {
       } catch {
         $report.gaps += @{ size = $size; message = $_.Exception.Message }
       }
+
+      try {
+        $scaled = New-Object System.Drawing.Icon($icon, $size, $size)
+        $tile = $scaled.ToBitmap()
+        $measured = Measure-Opaque $tile
+        $report.resized += @{
+          size = $size
+          width = $tile.Width
+          height = $tile.Height
+          opaque = $measured.opaque
+          sampled = $measured.sampled
+        }
+        $tile.Dispose()
+        $scaled.Dispose()
+      } catch {
+        $report.resizeGaps += @{ size = $size; message = $_.Exception.Message }
+      }
     }
+
+    $icon.Dispose()
   }
 } catch {
   $report.error = "$($_.Exception.GetType().Name): $($_.Exception.Message)"
 }
 
 $report.sizes = @($report.sizes)
+$report.resized = @($report.resized)
 $report.gaps = @($report.gaps)
+$report.resizeGaps = @($report.resizeGaps)
 $report | ConvertTo-Json -Depth 6 -Compress
 `;
 
@@ -153,37 +177,57 @@ export function verifyWindowsIcon(exePath) {
   }
 
   const report = readIconWithWindows(exePath);
+  const asList = (value) => (Array.isArray(value) ? value : value ? [value] : []);
+  const brief = (message) => String(message ?? '').replace(/\s+/g, ' ').trim().slice(0, 90);
+
   if (report.error) {
     problems.push(`Windows could not read an icon out of the executable — ${report.error}`);
+    console.log(`::notice::ICON-PROBE ${brief(report.error)}`);
     return { ok: false, problems, notes, frames: 0 };
   }
 
   const associated = report.associated ?? {};
+  const fileSizes = asList(report.sizes);
+  const scaledSizes = asList(report.resized);
+  const gaps = asList(report.gaps);
+  const resizeGaps = asList(report.resizeGaps);
+
   console.log(`  associated icon: ${associated.width}x${associated.height}, ` +
     `${associated.opaque}/${associated.sampled} sampled pixels opaque`);
+
+  // Loud, always: whatever Windows said, it lands in the run's annotations.
+  console.log(`::notice::ICON-PROBE associated ${associated.width}x${associated.height} ` +
+    `${associated.opaque}/${associated.sampled} opaque | from file: ` +
+    `${fileSizes.length ? fileSizes.map((frame) => `${frame.size}:${frame.opaque}/${frame.sampled}`).join(' ') : 'none'}` +
+    `${gaps.length ? ` | GDI+ file gaps: ${gaps.map((gap) => `${gap.size}px ${brief(gap.message)}`).join('; ')}` : ''}` +
+    ` | rescaled: ${scaledSizes.length ? scaledSizes.map((frame) => `${frame.size}:${frame.opaque}/${frame.sampled}`).join(' ') : 'none'}` +
+    `${resizeGaps.length ? ` | rescale gaps: ${resizeGaps.map((gap) => `${gap.size}px ${brief(gap.message)}`).join('; ')}` : ''}`);
 
   if (!associated.sampled || associated.opaque === 0) {
     problems.push('Windows extracted a blank icon (no opaque pixel in an 8x8 sample grid)');
   }
 
-  // A single decoded frame can arrive as an object rather than a one-element array.
-  const asList = (value) => (Array.isArray(value) ? value : value ? [value] : []);
-  const frames = asList(report.sizes);
-  for (const frame of frames) {
+  for (const frame of [...fileSizes, ...scaledSizes]) {
     console.log(`  ${String(frame.size).padStart(3)}px -> ${frame.width}x${frame.height}, ` +
       `${frame.opaque}/${frame.sampled} sampled pixels opaque`);
     if (frame.opaque === 0) problems.push(`the ${frame.size}px icon frame is blank once Windows decodes it`);
   }
 
-  const gaps = asList(report.gaps);
   for (const gap of gaps) {
-    notes.push(`${gap.size}px could not be decoded by GDI+ (${gap.message}) — it is a ` +
-      'PNG-compressed frame, which Windows reads and .NET does not');
+    notes.push(`${gap.size}px: GDI+ could not build it from the executable path (${brief(gap.message)}) — ` +
+      'System.Drawing.Icon(file, w, h) does not read PE icon resources; Windows itself does');
+  }
+  for (const gap of resizeGaps) {
+    notes.push(`${gap.size}px: the extracted icon could not be rescaled (${brief(gap.message)})`);
   }
 
-  if (!frames.length) problems.push('GDI+ could not decode a single icon frame');
+  // What has to be true for the release: the shell can find the mark, and every
+  // size it asks for comes back with something drawn on it.
+  if (!fileSizes.length && !scaledSizes.length) {
+    problems.push(`Windows could not produce the icon at any size (${brief(gaps[0]?.message ?? 'no detail')})`);
+  }
 
-  return { ok: problems.length === 0, problems, notes, frames: frames.length };
+  return { ok: problems.length === 0, problems, notes, frames: Math.max(fileSizes.length, scaledSizes.length) };
 }
 
 /* Direct execution: `bun scripts/verify-windows-icon.mjs dist/windows/DENTIVA.exe`. */

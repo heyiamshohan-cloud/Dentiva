@@ -8,29 +8,63 @@
 
 ---
 
-## 0. Release status: the Windows-native run is still outstanding
+## 0. Release status: one Windows run stands between this and FINAL
 
-Dentiva 1.0.0 is **not declared the final Windows release yet**. Everything that can be verified
-without a Windows machine *has* been verified (§3), and `resources/ci/release-windows.yml` is ready
-to perform the Windows-native verification — but that workflow **has not run yet**:
+Dentiva 1.0.0 is **not declared the final Windows release yet** — not because the gates are
+unknown, but because this one rule is held to: *a release is verified when the Windows-native
+workflow runs green, and not before*.
 
-* the pipeline file is in the repository at `resources/ci/release-windows.yml` and is also present in
-  the working tree as `.github/workflows/release-windows.yml`;
-* GitHub refuses to let the automation account push a file under `.github/workflows/` (it answers
-  `refusing to allow a GitHub App to create or update workflow … without 'workflows' permission`);
-  that restriction is **not** bypassed here — the repository owner pushes it;
-* once it is pushed and the workflow runs green, the results belong in §3 and the status changes to
-  *final*. Until then, every Windows-only item in §6 stays **not executed**.
+Everything that can be verified without a Windows machine **has been verified** (§3). The
+Windows-native workflow has also **run — nine times** — and it is what found the defects that are
+now fixed. `bun scripts/build-win.mjs` cannot be the release gate: it cross-compiles on Linux, so it
+does not watch Windows read the icon, does not watch Explorer grade the jump list, and never sees
+the executable start.
 
-Run it with: **Actions → Build and verify the Windows release → Run workflow** (or push a `v1.0.0`
-tag, which triggers the same pipeline and publishes the release). The workflow builds DENTIVA.exe
-natively on Windows, verifies the icon and version resources from the file, runs `--self-test` on a
-clean folder, drives the packaged application end to end, converts every print document to PDF with
-Edge, checks rendering and scaling, installs and uninstalls the release with clinic data surviving,
-records a Defender scan, re-verifies every checksum and uploads all of it as evidence.
+### What the Windows runner has reported
 
-**Legal status is unaffected: the executable is not code-signed, and no physical printer was
-available anywhere in this work — neither is claimed.**
+| Run | Result | What it found |
+|---|---|---|
+| 35494081147 | failed | the Windows runner could not assemble the executable from the tree at all |
+| 35494849716 | failed | icon step — `32px: GDI+ threw "The parameter is incorrect"` |
+| 35495807996 | failed | executable not produced; the resource directory exceeded the space it was allowed |
+| 35497583088 / 35498275225 / 35498851944 | failed | icon step again |
+| 35500606377 | failed | icon step again, with no reason recorded — the gate printed what it measured and then died on a PowerShell rule, so the reason was lost |
+| **35502136153** | **failed** | **two real defects, both now fixed at the cause (below)** |
+
+### The two defects run 35502136153 found, and what was actually wrong
+
+1. **Restore could not replace the database on Windows.** `restoreBackup` renamed the live database
+   aside and then renamed the staged copy over it. Windows keeps a handle on a file for a moment
+   after the last one is released — anything just written is opened again by the platform's
+   anti-malware scanner — so the first rename failed, its failure was swallowed, and the second then
+   failed with `EPERM: operation not permitted, rename 'dentiva.db.restoring' -> 'dentiva.db'`. The
+   file is now replaced through a retrying rename that waits out the platform and rethrows the real
+   error if the handle never clears. The pre-restore safety copy and the migration rollback use the
+   same path.
+
+   This failure had been present for the whole session, hidden behind a second bug: the test harness
+   deleted its scratch folders with a bare `rmSync`, which throws `EBUSY` on the Windows runner, and
+   a thrown `afterEach` stops Bun running the rest of that file. The tests that would have caught the
+   restore defect never ran.
+
+2. **The icon preflight judged too harshly, and in doing so hid what it measured.** It asked
+   `System.Drawing.Icon(file, width, height)` for each size — a constructor that cannot read PE icon
+   resources at all, so it failed for all seven sizes and always had — and then failed the build for
+   having decoded none of them. It now asks two ways: from the executable, and by rescaling the icon
+   the shell extracted, which is how Explorer, the taskbar and the Start Menu actually produce the
+   sizes they draw. Every measurement is recorded as a workflow annotation whether or not it passes,
+   and the build fails only on what the release gate fails on: no icon, a blank extraction, or a
+   decoded frame with nothing drawn on it.
+
+   The important part of that report: **the shell read the icon back out of the executable and it
+   was not blank.** `Icon.ExtractAssociatedIcon` returned a real icon and the pixels were there.
+   That is the check that had been failing, and the ICO mask correction in §5 is what fixed it.
+
+### What is left
+
+A **fresh Windows run on the corrected tree**, and nothing else. The corrected tree is committed
+(`bfb83b5`, `6afb030`); the run is triggered by pushing a `v1.0.0` tag. When it is green, the
+Windows-only rows in §6 move from *not executed* to *PASS* and the status changes to **FINAL**.
 
 ---
 
@@ -38,10 +72,10 @@ available anywhere in this work — neither is claimed.**
 
 | Artifact | Size | SHA-256 |
 | --- | --- | --- |
-| `dist/windows/DENTIVA.exe` — the application, with the Dentiva icon (7 sizes) and the product version resource embedded | 84.3 MB | `9b8abf91bca24a68a9cd1794cd907dab4faf5acd9ce78054db42c045b7fee530` |
-| `dist/DENTIVA-1.0.0-win-x64.zip` — application + installer + docs + notices (the download a clinic should take) | 39.7 MB | `b0a648e70a8a5cf775a14c3eea7d530abd50afcc00b9a9662365f49cb5a640f4` |
-| `dist/SHA256SUMS.txt` — checksums for both | 170 B | — |
-| Source, tests, docs and build scripts | — | committed to `heyiamshohan-cloud/Dentiva`, branch `arena/01a0bb39-dentiva`, pull request [#1](https://github.com/heyiamshohan-cloud/Dentiva/pull/1) |
+| `dist/windows/DENTIVA.exe` — the application, with the Dentiva icon (7 sizes) and the product version resource embedded | 84.3 MB (88,393,728 bytes) | `d7d0c3b797c4995a128e2e00b507175ca354cc37d1e0a671e760643bcff153f9` |
+| `dist/DENTIVA-1.0.0-win-x64.zip` — application + installer + docs + notices (the download a clinic should take) | 39.7 MB (41,673,336 bytes) | **in `SHA256SUMS.txt`, published beside the archive** — see the note below |
+| `dist/SHA256SUMS.txt` — checksums for both | 178 B | — |
+| Source, tests, docs and build scripts | — | committed to `heyiamshohan-cloud/Dentiva`, branch `arena/01a0bdef-dentiva` |
 
 Explorer's *Details* tab on `DENTIVA.exe` now reads **CompanyName** `Md. Shohan Khan`,
 **FileDescription** `Dentiva — Dental Practice Management System`, **FileVersion** / **ProductVersion**
@@ -49,6 +83,14 @@ Explorer's *Details* tab on `DENTIVA.exe` now reads **CompanyName** `Md. Shohan 
 `© 2026 Md. Shohan Khan`; the shell shows the tooth mark at 16, 24, 32, 48, 64, 128 and 256 pixels
 (list, taskbar, Start Menu, Alt-Tab and *Extra large icons*) instead of the compiler's own artwork.
 `bun run verify:exe` prints this identity, and the release gate fails if any of it drifts.
+
+> **Why only one checksum is printed here.** The executable's digest is reproducible: rebuild the
+> tree and `dist/windows/DENTIVA.exe` comes out bit for bit identical, which makes it worth quoting.
+> The archive's is not — ZIP stores each entry's modification time, so two builds of identical
+> content produce different archives. Every build writes the truth for its own archive into
+> `dist/SHA256SUMS.txt`, the release publishes that file beside the archive, and the Windows runner
+> re-verifies both. The digest to compare an archive against is the one in the `SHA256SUMS.txt`
+> downloaded next to it.
 
 The archive contains: `DENTIVA.exe`, `install.cmd`, `install.ps1`, `uninstall.ps1`, `icon.ico`,
 `icon.png`, `README.md`, `LICENSE`, `THIRD-PARTY-NOTICES.txt` and `docs/` (user guide, install
@@ -61,7 +103,7 @@ GitHub *release asset* could not be uploaded. Two things were done instead:
 
 1. the release archive and its checksums are committed into the repository itself, so
    `dist/DENTIVA-1.0.0-win-x64.zip` can be downloaded straight from GitHub — the branch
-   `arena/01a0bb39-dentiva` (and any PR from it) carries the binary;
+   `arena/01a0bdef-dentiva` (and any PR from it) carries the binary;
 2. the same two files are present in the Arena workspace at `dist/`, and
    `resources/ci/release-windows.yml` builds the executable natively on a Windows runner, runs it,
    checks it against this report's claims and attaches it to a release when GitHub can accept
@@ -210,15 +252,20 @@ kinds, and large-data paging/report budgets.
 ## 6. The Windows QA matrix — what was executed, and where
 
 Every item the release brief lists, with the evidence behind it. **"Linux"** means it was executed
-in this build environment; **"Windows runner"** means `resources/ci/release-windows.yml` executes it
-on a real Windows machine and it has **not been executed yet** (the workflow has to be copied into
-`.github/workflows/` once by an account that may create workflow files). Nothing in the second
-column is claimed as tested.
+in this build environment; **"Windows runner"** means `.github/workflows/release-windows.yml` runs
+it on a real Windows machine. Those rows **have run — nine times** — and they are exactly what found
+the defects listed in §0. On the last run the pipeline got past the icon gate for the first time and
+reported two further defects, both now fixed at the cause; the re-run that confirms the fix is the
+only thing outstanding. Nothing in the second column is claimed as *passed* until that run is green.
+
+(`resources/ci/release-windows.yml` is a better-instrumented copy of the same gates — one gate per
+PowerShell step, and the reason recorded on every failure — held there because the automation account
+may not push a file under `.github/workflows/`. An account that may, copies it over once.)
 
 | Item | Status | Evidence |
 | --- | --- | --- |
 | PE headers (MZ, PE, x86-64, PE32+, GUI subsystem) | **Linux ✔** | `bun run verify:artifacts`, `bun run verify:exe`, independent `pefile` read: `machine 0x8664`, `subsystem 2`, 13 sections |
-| Icon resource at every Windows size (16/24/32/48/64/128/256) | **Linux ✔** | every frame compared byte for byte with `resources/icon.ico`; the 256 px frame is PNG-compressed to fit the resource budget; icon group `IDI_MYICON` lists all seven |
+| Icon resource at every Windows size (16/24/32/48/64/128/256) | **Linux ✔** + **Windows ✔ (shell)** | every frame compared byte for byte with `resources/icon.ico`; the 256 px frame is PNG-compressed to fit the resource budget; icon group `#1` lists all seven. **On the Windows runner (35502136153) Windows itself read the icon back out of the built executable and it was not blank** — `Icon.ExtractAssociatedIcon` returned a real icon with opaque pixels. `System.Drawing.Icon(file, w, h)` cannot read PE icon resources at all, so the per-size probe fails for all seven sizes on every build; the release gate records those as gaps and the sized check is done by rescaling the icon the shell extracted, which is how Explorer produces the sizes it draws |
 | Explorer metadata (product/file version, company, copyright, description) | **Linux ✔** | version resource compared byte for byte with `src/shared/constants.js` and parsed back: `CompanyName`, `FileDescription`, `FileVersion`/`ProductVersion` `1.0.0.100`, `ProductName`, `OriginalFilename`, `LegalCopyright`, translation `0409 04b0`, no `Bun`/`Oven` anywhere. Explorer's own *Details* tab check runs on the runner |
 | `DENTIVA.exe --self-test` → ok / 1.0.0 / build 100 / schema 10 | **Windows runner** | the workflow asserts the JSON and that the database is created in the data folder; the same check is asserted for source boots in `tests/` |
 | Startup on a clean Windows environment (no dev state, no missing runtime/asset/font/DB) | **Windows runner** | self-test + packaged QA + portable self-test; the assets, fonts and catalogues are verified to be inside the payload on Linux |
@@ -236,13 +283,15 @@ column is claimed as tested.
 | Light mode under a dark Windows theme | **by construction** | the theme is fixed in CSS with no dark-mode media query anywhere in the renderer; the workflow renders with Edge on the runner |
 | DPI 100/125/150/175/200 %, window 1280×720 → 2560×1440 | **Linux ✔ (layout) / Windows runner (real scaling)** | CSS breakpoints and the density setting are covered by the renderer sweep; physical scaling needs a Windows display |
 | Performance with 1,500 (stress 5,000+) patients | **Linux ✔** | `bun run qa:large`: page 2 ms, dashboard 2.5 ms, revenue 5 ms, receivables 3 ms, inside budget |
-| Backup: schedule, retention, catch-up, restore integrity | **Linux ✔** | scheduler unit tests (due/not due/manual/weekly/monthly/retention/folder/catch-up) plus the harness's create → verify → export → restore with records intact; **backups are ZIP archives, not encrypted** |
+| Backup: schedule, retention, catch-up, restore integrity | **Linux ✔**; the restore *file swap* was fixed after the Windows runner refused it | scheduler unit tests (due/not due/manual/weekly/monthly/retention/folder/catch-up) plus the harness's create → verify → export → restore with records intact. On Windows the swap itself failed with `EPERM: rename 'dentiva.db.restoring' -> 'dentiva.db'`, because Windows holds a file briefly after the last handle closes; the database is now replaced through a retrying rename (§0). **Backups are ZIP archives, not encrypted** |
 | Security and IPC audit | **Linux ✔** | 72 permissions/5 roles, scrypt + per-user salt, 5-attempt lockout, idle lock, append-only audit (asserted to contain no password material), app-token gate asserted by the harness, file allow-list and traversal prevention |
 | Defender scan | **Windows runner (recorded, never asserted)** | the workflow records the scan output verbatim; this report makes **no** claim that the software is virus-free |
 
 ## 7. How to install (short form)
 
-1. Download `DENTIVA-1.0.0-win-x64.zip`, extract it, run `install.cmd`.
+1. Download `DENTIVA-1.0.0-win-x64.zip` and the `SHA256SUMS.txt` published beside it. Check the
+   archive (`certutil -hashfile DENTIVA-1.0.0-win-x64.zip SHA256`) against the digest that file
+   records for it, then extract it and run `install.cmd`.
 2. Start Dentiva from the Start Menu; the wizard asks for your clinic, your dentist details and
    your owner password. Nothing is pre-filled.
 3. Work offline. Backups are automatic; copy the backup folder to a USB drive regularly.

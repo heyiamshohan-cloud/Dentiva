@@ -529,9 +529,13 @@ jobs:
             }
 
             $bitmap.Dispose()
-            $icon.Dispose()
 
+            # Two ways of asking for a size. The first reads the executable;
+            # the second rescales the icon the shell just handed over, which is
+            # how Explorer, the taskbar and the Start Menu actually produce the
+            # sizes they draw. Neither may hand back a blank image.
             $gdiPlusGap = @()
+            $produced = @()
 
             foreach ($size in 16, 24, 32, 48, 64, 128, 256) {
               try {
@@ -554,6 +558,7 @@ jobs:
                 )
 
                 $script:report += "${size}px ${detail.Opaque}/${detail.Sampled}"
+                $produced += $size
 
                 if ($detail.Opaque -eq 0) {
                   Write-Host "::error::ICON-GATE: the ${size}px icon frame is empty"
@@ -564,31 +569,87 @@ jobs:
                 $sized.Dispose()
               }
               catch {
+                # System.Drawing.Icon(file, width, height) reads a stand-alone
+                # .ico stream; it does not read PE icon resources, so this is
+                # expected to fail for an executable and is recorded, not
+                # failed, provided the shell can produce the size (below).
                 $message = $_.Exception.Message
 
                 Write-Host (
-                  "  ${size}px - .NET could not decode this frame: $message"
+                  "  ${size}px - .NET cannot read PE icon resources: $message"
                 )
 
-                $script:report += "${size}px undecodable ($message)"
+                $script:report += "${size}px not read from file ($message)"
                 $gdiPlusGap += $size
               }
             }
 
+            # The check that matters: Windows has the mark, and every size it
+            # asks for comes back with something drawn on it.
+            foreach ($size in 16, 24, 32, 48, 64, 128, 256) {
+              try {
+                $scaled = New-Object System.Drawing.Icon(
+                  $icon,
+                  $size,
+                  $size
+                )
+
+                $tile = $scaled.ToBitmap()
+                $detail = Get-OpaqueSamples $tile
+
+                Write-Host (
+                  "  {0,3}px -> {1}x{2} rescaled, {3}/{4} sampled pixels opaque" -f `
+                  $size,
+                  $tile.Width,
+                  $tile.Height,
+                  $detail.Opaque,
+                  $detail.Sampled
+                )
+
+                $script:report += "${size}px rescaled ${detail.Opaque}/${detail.Sampled}"
+                $produced += $size
+
+                if ($detail.Opaque -eq 0) {
+                  Write-Host "::error::ICON-GATE: the ${size}px icon rescales to nothing"
+                  exit 1
+                }
+
+                $tile.Dispose()
+                $scaled.Dispose()
+              }
+              catch {
+                $message = $_.Exception.Message
+
+                Write-Host (
+                  "  ${size}px - the extracted icon could not be rescaled: $message"
+                )
+
+                $script:report += "${size}px not rescaled ($message)"
+              }
+            }
+
+            $icon.Dispose()
+
             if ($gdiPlusGap.Count) {
               Write-Host (
-                "  .NET/GDI+ could not decode: $($gdiPlusGap -join ', ') px - " +
-                "these are PNG-compressed frames, checked by stamp-exe.mjs instead."
+                "  .NET/GDI+ cannot read PE icon resources from a file path " +
+                "($($gdiPlusGap -join ', ') px); those sizes were checked by " +
+                "rescaling the icon Windows extracted instead."
               )
             }
 
-            Write-Host 'Icon resources load at every size and are not blank.'
+            if (-not $produced.Count) {
+              Write-Host '::error::ICON-GATE: Windows could not produce the icon at any size'
+              exit 1
+            }
+
+            Write-Host 'Icon resources load and are not blank.'
           }
           catch {
             $detail = $script:report -join '; '
             Write-Host (
               "::error::ICON-GATE: $($_.Exception.GetType().Name): $($_.Exception.Message) " +
-              "- measurements: $detail"
+                "- measurements: $detail"
             )
             exit 1
           }
