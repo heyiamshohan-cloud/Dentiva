@@ -91,9 +91,19 @@ jobs:
             foreach ($path in $paths) {
               Add-MpPreference -ExclusionPath $path -ErrorAction Stop
             }
-            Write-Host "  defender exclusions: $($paths -join ', ')"
+            # Read the list back from the operating system so a silent
+            # failure cannot hide: if an exclusion is missing, the
+            # file-handling tests below would be running against a live
+            # scanner, and that needs to be visible in the run record.
+            $applied = @(Get-MpPreference).ExclusionPath
+            $applied | ForEach-Object { Write-Host "  defender exclusion active: $_" }
+            foreach ($path in $paths) {
+              if ($applied -notcontains $path) {
+                Write-Host "::warning::defender exclusion is NOT active for $path"
+              }
+            }
           } catch {
-            Write-Host "  defender exclusions unavailable, continuing: $($_.Exception.Message)"
+            Write-Host "::warning::defender exclusions unavailable: $($_.Exception.Message)"
           }
 
       - name: Record the runner (version evidence)

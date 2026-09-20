@@ -48,14 +48,14 @@ export function isHeldError(error) {
  * @param {{ attempts?: number }} [options]
  * @returns {boolean} false only when the file will not go and must be left
  */
-export function removeFileRetrying(path, { attempts = 24 } = {}) {
+export function removeFileRetrying(path, { attempts = 30 } = {}) {
   for (let attempt = 1; ; attempt += 1) {
     try {
       rmSync(path, { force: true });
       return true;
     } catch (error) {
       if (!isHeldError(error) || attempt >= attempts) return false;
-      sleepSync(Math.min(50 * attempt, 400));
+      sleepSync(Math.min(50 * attempt, 500));
     }
   }
 }

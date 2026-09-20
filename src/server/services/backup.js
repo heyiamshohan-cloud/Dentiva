@@ -402,15 +402,15 @@ export function quarantineJournals(databasePath, previousPath) {
 
     while (!clear) {
       let removed = false;
-      for (let attempt = 1; attempt <= 12; attempt += 1) {
+      for (let attempt = 1; attempt <= 16; attempt += 1) {
         try {
           rmSync(path, { force: true });
           removed = true;
           break;
         } catch (error) {
           if (!isHeldError(error)) break;
-          if (attempt === 12) break;
-          sleepSync(Math.min(50 * attempt, 200));
+          if (attempt === 16) break;
+          sleepSync(Math.min(50 * attempt, 400));
         }
       }
       if (!removed) break;
