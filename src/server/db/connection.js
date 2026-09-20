@@ -21,10 +21,16 @@ let instancePath = null;
 /** Track every opened handle so concurrent tests can be closed reliably on Windows. */
 const tracked = new Map();
 
+// busy_timeout comes first on purpose. Switching a database into WAL mode
+// needs a brief exclusive lock, and Windows holds a file for a moment after it
+// is written while the platform scans it — so `journal_mode` is the pragma most
+// likely to be refused, and it has to be able to wait. Setting the timeout
+// after it, as this list used to, meant the one pragma that needs to wait was
+// the only one that could not.
 const PRAGMAS = [
+  'PRAGMA busy_timeout = 8000',
   'PRAGMA journal_mode = WAL',
   'PRAGMA foreign_keys = ON',
-  'PRAGMA busy_timeout = 8000',
   'PRAGMA synchronous = FULL',
   'PRAGMA temp_store = MEMORY',
   'PRAGMA cache_size = -32000',

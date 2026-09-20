@@ -350,6 +350,49 @@ function describeFile(path) {
 }
 
 /**
+ * A replaced database must not inherit the previous database's journal.
+ *
+ * SQLite removes its write-ahead log when the last connection closes, but
+ * Windows can refuse that removal while the platform still holds the file, and
+ * a `-wal` or `-shm` left behind belongs to a database that is no longer there.
+ * Opening the new file beside it asks SQLite to recover a log whose frames
+ * describe pages that were just replaced — which is how a restore that looks
+ * like it worked turns into a database that will not open. They are removed
+ * here, while nothing has the database open.
+ *
+ * @param {string} databasePath
+ */
+function discardJournalFiles(databasePath) {
+  const left = [];
+
+  for (const suffix of ['-wal', '-shm', '-journal']) {
+    const path = `${databasePath}${suffix}`;
+
+    for (let attempt = 1; attempt <= 12; attempt += 1) {
+      try {
+        if (!existsSync(path)) break;
+        rmSync(path, { force: true });
+        break;
+      } catch (error) {
+        if (!HELD_CODES.has(error?.code)) break;
+        if (attempt === 12) {
+          left.push(basename(path));
+          break;
+        }
+        sleepSync(Math.min(50 * attempt, 400));
+      }
+    }
+  }
+
+  if (left.length) {
+    console.warn(
+      `[dentiva] ${left.join(', ')} could not be removed after the restore; ` +
+        `SQLite will validate them before using the database`,
+    );
+  }
+}
+
+/**
  * Rename `from` over `to`, retrying while Windows still holds the file.
  *
  * SQLite has been closed by the time this runs, but Windows keeps a handle on a
@@ -449,6 +492,7 @@ export function restoreBackup(db, ctx, { archivePath, backupDir = null, dataDir 
     }
   }
   replaceFile(stagingPath, databasePath);
+  discardJournalFiles(databasePath);
 
   const restoredDb = openDatabase(databasePath);
   let migration = null;
@@ -460,6 +504,7 @@ export function restoreBackup(db, ctx, { archivePath, backupDir = null, dataDir 
     if (hadDatabase && existsSync(previousPath)) {
       rmSync(databasePath, { force: true });
       replaceFile(previousPath, databasePath);
+      discardJournalFiles(databasePath);
       openDatabase(databasePath);
     }
     throw error;
