@@ -77,7 +77,13 @@ jobs:
 
           Invoke-Gate 'i18n' 'qa-i18n.log' { bun scripts/check-i18n.mjs }
           Invoke-Gate 'typecheck' 'qa-typecheck.log' { bun x tsc --noEmit }
-          Invoke-Gate 'tests' 'qa-tests.log' { bun test tests/ }
+          Invoke-Gate 'tests' 'qa-tests.log' {
+            # Windows re-opens freshly written files to scan them and can hold
+            # them for several seconds, so a test that does real I/O there runs
+            # longer than the 5 s default. The assertions are untouched; the
+            # ceiling only has to outlast the operating system.
+            bun test --timeout 60000 tests/
+          }
           Invoke-Gate 'renderer' 'qa-renderer.log' { bun run qa:renderer }
 
           if ($failed.Count) {

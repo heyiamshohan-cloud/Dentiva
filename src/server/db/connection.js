@@ -12,7 +12,53 @@
  */
 import { Database } from 'bun:sqlite';
 import { dirname } from 'node:path';
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync } from 'node:fs';
+
+/**
+ * Ways an operating system says "that file is busy right now".
+ *
+ * On Windows, in particular, a file that has just been written is re-opened
+ * by the platform's anti-malware scanner, and a handle like that can block a
+ * rename, a delete, or an exclusive lock for several seconds. None of that is
+ * a fault in the data; it is a condition to wait out, and only to wait out.
+ */
+export const HELD_CODES = new Set(['EPERM', 'EBUSY', 'EACCES', 'ENOTEMPTY']);
+
+/** @param {number} ms */
+export function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * @param {unknown} error
+ * @returns {boolean}
+ */
+export function isHeldError(error) {
+  if (!error) return false;
+  const code = /** @type {any} */ (error).code;
+  if (typeof code === 'string' && HELD_CODES.has(code)) return true;
+  const message = String(/** @type {any} */ (error).message ?? '');
+  return /SQLITE_(BUSY|LOCKED)|database (is|was) (busy|locked)|EPERM|EACCES|EBUSY/i.test(message);
+}
+
+/**
+ * Delete a file, retrying while the operating system still holds it.
+ *
+ * @param {string} path
+ * @param {{ attempts?: number }} [options]
+ * @returns {boolean} false only when the file will not go and must be left
+ */
+export function removeFileRetrying(path, { attempts = 24 } = {}) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      rmSync(path, { force: true });
+      return true;
+    } catch (error) {
+      if (!isHeldError(error) || attempt >= attempts) return false;
+      sleepSync(Math.min(50 * attempt, 400));
+    }
+  }
+}
 
 /** @type {Database | null} */
 let instance = null;
@@ -48,13 +94,48 @@ const PRAGMAS = [
 export function openDatabase(filePath, options = {}) {
   if (instance && instancePath === filePath && !options.readonly) return instance;
   mkdirSync(dirname(filePath), { recursive: true });
-  const db = new Database(filePath, {
-    create: !options.readonly,
-    readwrite: !options.readonly,
-  });
-  for (const pragma of PRAGMAS) {
-    if (options.readonly && pragma.startsWith('PRAGMA journal_mode')) continue;
-    db.exec(pragma);
+
+  // The file is created the moment it is first written, and on Windows the
+  // platform then opens it to scan it before we have done anything with it.
+  // Both the open and the pragmas are retried while that is happening; a
+  // database that cannot be opened in its own folder is an app that cannot
+  // start, and waiting is the only answer.
+  /** @type {Database | null} */
+  let db = null;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      db = new Database(filePath, {
+        create: !options.readonly,
+        readwrite: !options.readonly,
+      });
+      break;
+    } catch (error) {
+      if (!isHeldError(error) || attempt >= 24) throw error;
+      sleepSync(Math.min(50 * attempt, 400));
+    }
+  }
+  try {
+    for (const pragma of PRAGMAS) {
+      if (options.readonly && pragma.startsWith('PRAGMA journal_mode')) continue;
+      for (let attempt = 1; ; attempt += 1) {
+        try {
+          db.exec(pragma);
+          break;
+        } catch (error) {
+          if (!isHeldError(error) || attempt >= 24) throw error;
+          sleepSync(Math.min(50 * attempt, 400));
+        }
+      }
+    }
+  } catch (error) {
+    // The file was opened but could not be brought to a known state; the
+    // handle goes back to the operating system before the error does.
+    try {
+      db.close();
+    } catch {
+      /* the file is already going away with the error */
+    }
+    throw error;
   }
   if (!options.readonly) {
     instance = db;

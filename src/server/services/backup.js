@@ -13,7 +13,7 @@ import { createHash } from 'node:crypto';
 import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { Database } from 'bun:sqlite';
-import { closeDatabase, currentDatabasePath, openDatabase } from '../db/connection.js';
+import { closeDatabase, currentDatabasePath, isHeldError, openDatabase, removeFileRetrying, sleepSync } from '../db/connection.js';
 import { latestMigrationId, migrate } from '../db/migrations/index.js';
 import { assertValid } from '../domain/validation.js';
 import { ConflictError, FileError, NotFoundError, UnsupportedDatabaseError, ValidationError } from '../../shared/errors.js';
@@ -316,19 +316,6 @@ export function verifyBackup(db, ctx, archivePath) {
 }
 
 /**
- * Ways Windows says "that file is busy right now".
- *
- * A rename or a delete can be refused with any of these even when nothing
- * about the data is wrong — see `replaceFile`.
- */
-const HELD_CODES = new Set(['EPERM', 'EBUSY', 'EACCES', 'ENOTEMPTY']);
-
-/** @param {number} ms */
-function sleepSync(ms) {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
-/**
  * Describe a file well enough to say *why* an operation on it was refused.
  * @param {string} path
  */
@@ -350,33 +337,56 @@ function describeFile(path) {
 }
 
 /**
+ * The write-ahead log, shared memory and rollback journal of a database, if
+ * any of them still exists.
+ * @param {string} databasePath
+ */
+function journalFiles(databasePath) {
+  const found = [];
+  for (const suffix of ['-wal', '-shm', '-journal']) {
+    const path = `${databasePath}${suffix}`;
+    if (existsSync(path)) found.push({ suffix, path });
+  }
+  return found;
+}
+
+/**
  * A replaced database must not inherit the previous database's journal.
  *
  * SQLite removes its write-ahead log when the last connection closes, but
- * Windows can refuse that removal while the platform still holds the file, and
- * a `-wal` or `-shm` left behind belongs to a database that is no longer there.
- * Opening the new file beside it asks SQLite to recover a log whose frames
- * describe pages that were just replaced — which is how a restore that looks
- * like it worked turns into a database that will not open. They are removed
- * here, while nothing has the database open.
+ * Windows can refuse that removal while the platform still holds the file,
+ * and a `-wal` left behind belongs to a database that is no longer there.
+ * Opening the new file beside it asks SQLite to replay the old snapshot's
+ * pages into the new one — which is not recovery, it is corruption, and it
+ * shows up later as a database that reports "disk image is malformed".
+ *
+ * So a journal never meets a database it does not belong to: the old
+ * database's journals are moved aside together with it, whatever survives
+ * at the live name is removed with a proper budget, and if it still will
+ * not go the restore fails and rolls back rather than risk it.
  *
  * @param {string} databasePath
+ * @param {string} previousPath
+ * @returns {string[]} the journal suffixes still held at the live name
  */
-function discardJournalFiles(databasePath) {
-  const left = [];
+export function quarantineJournals(databasePath, previousPath) {
+  const survivors = [];
 
-  for (const suffix of ['-wal', '-shm', '-journal']) {
-    const path = `${databasePath}${suffix}`;
+  for (const { suffix, path } of journalFiles(databasePath)) {
+    try {
+      replaceFile(path, `${previousPath}${suffix}`);
+      continue;
+    } catch {
+      /* it will be removed below instead */
+    }
 
-    for (let attempt = 1; attempt <= 12; attempt += 1) {
+    for (let attempt = 1; ; attempt += 1) {
       try {
-        if (!existsSync(path)) break;
         rmSync(path, { force: true });
         break;
       } catch (error) {
-        if (!HELD_CODES.has(error?.code)) break;
-        if (attempt === 12) {
-          left.push(basename(path));
+        if (!isHeldError(error) || attempt >= 24) {
+          survivors.push(basename(path));
           break;
         }
         sleepSync(Math.min(50 * attempt, 400));
@@ -384,12 +394,7 @@ function discardJournalFiles(databasePath) {
     }
   }
 
-  if (left.length) {
-    console.warn(
-      `[dentiva] ${left.join(', ')} could not be removed after the restore; ` +
-        `SQLite will validate them before using the database`,
-    );
-  }
+  return survivors;
 }
 
 /**
@@ -421,7 +426,7 @@ function replaceFile(from, to, { attempts = 24 } = {}) {
       return;
     } catch (error) {
       lastError = error;
-      if (!HELD_CODES.has(error?.code)) throw error;
+      if (!isHeldError(error)) throw error;
       // 50 ms, 100 ms … up to 400 ms: long enough to outlast a scanner, short
       // enough that a genuinely stuck file still fails in a few seconds.
       sleepSync(Math.min(50 * attempt, 400));
@@ -491,25 +496,52 @@ export function restoreBackup(db, ctx, { archivePath, backupDir = null, dataDir 
       /* keep going: the staged copy is still written below */
     }
   }
+  // The old database's journals travel with it: they belong to the old
+  // snapshot, and they must never meet the new one.
+  const survivors = hadDatabase ? quarantineJournals(databasePath, previousPath) : [];
   replaceFile(stagingPath, databasePath);
-  discardJournalFiles(databasePath);
 
-  const restoredDb = openDatabase(databasePath);
   let migration = null;
+  let restoredDb = null;
   try {
+    if (survivors.length) {
+      throw new Error(
+        `restore aborted before first open: ${survivors.join(', ')} is still held ` +
+          `by the operating system and must not meet the restored database`,
+      );
+    }
+    restoredDb = openDatabase(databasePath);
     migration = migrate(restoredDb, { appVersion: APP_VERSION });
   } catch (error) {
     // Roll back to the pre-restore file so the app is never left unopenable.
+    // If its own journals survived at the live name, they belong to this very
+    // file, and opening it beside them is SQLite's normal crash-recovery path.
     closeDatabase();
     if (hadDatabase && existsSync(previousPath)) {
-      rmSync(databasePath, { force: true });
+      removeFileRetrying(databasePath);
       replaceFile(previousPath, databasePath);
-      discardJournalFiles(databasePath);
+      for (const { suffix } of journalFiles(`${previousPath}`)) {
+        try {
+          replaceFile(`${previousPath}${suffix}`, `${databasePath}${suffix}`);
+        } catch {
+          /* best effort: the database itself is back */
+        }
+      }
       openDatabase(databasePath);
     }
     throw error;
   }
-  rmSync(previousPath, { force: true });
+  if (!removeFileRetrying(previousPath)) {
+    console.warn(
+      `[dentiva] the pre-restore copy ${basename(previousPath)} could not be removed and ` +
+        `has been left in the data folder`,
+    );
+  }
+  for (const { suffix } of journalFiles(previousPath)) {
+    if (!removeFileRetrying(`${previousPath}${suffix}`)) {
+      console.warn(`[dentiva] ${basename(previousPath)}${suffix} could not be removed and has been left in the data folder`);
+    }
+  }
 
   let attachmentCount = 0;
   if (restoreAttachments) {

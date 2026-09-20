@@ -45,10 +45,10 @@ import {
 import { deleteExpense, listExpenses } from '../../src/server/services/finance.js';
 import { dismiss, listNotifications, markAllRead, markRead, refreshNotifications, setPreference, unreadCount } from '../../src/server/services/notifications.js';
 import { dashboard, patientStatement, reportCatalogue, reportCsv, runReport } from '../../src/server/services/reports.js';
-import { createBackup, exportData, importPatients, listBackups, restoreBackup, verifyBackup } from '../../src/server/services/backup.js';
+import { createBackup, exportData, importPatients, listBackups, quarantineJournals, restoreBackup, verifyBackup } from '../../src/server/services/backup.js';
 import { createZip, extractZip } from '../../src/server/domain/zip.js';
 import { buildCsv, parseCsv } from '../../src/server/domain/csv.js';
-import { getDb } from '../../src/server/db/connection.js';
+import { closeDatabase, getDb } from '../../src/server/db/connection.js';
 import { ConflictError, NotFoundError, ValidationError } from '../../src/shared/errors.js';
 import { todayIso } from '../../src/server/domain/dates.js';
 
@@ -324,6 +324,34 @@ describe('backup, restore and data exchange', () => {
     expect(existsSync(`${e.dir}/attachments/${attachment.relPath}`)).toBe(true);
     // A pre-restore safety copy is always written.
     expect(readdirSync(`${e.dir}/backups`).some((file) => file.includes('pre-restore'))).toBe(true);
+  });
+
+  test('a foreign journal at the live name can never meet the restored database', () => {
+    const { env: e } = setup();
+    const dbPath = `${e.dir}/dentiva.db`;
+    const previousPath = `${dbPath}.previous`;
+
+    // The exact state Windows reaches when the platform holds the file: the
+    // previous database's write-ahead log, shared memory and rollback journal
+    // are still sitting at the live name after the swap. If any of them is
+    // allowed to stay, SQLite replays the old snapshot's pages into the new
+    // database on open. Quarantining must move every one of them aside.
+    writeFileSync(dbPath, Buffer.from('x'));
+    writeFileSync(`${dbPath}-wal`, Buffer.from('old-wal'));
+    writeFileSync(`${dbPath}-shm`, Buffer.from('old-shm'));
+    writeFileSync(`${dbPath}-journal`, Buffer.from('old-journal'));
+
+    const survivors = quarantineJournals(dbPath, previousPath);
+    expect(survivors).toEqual([]);
+
+    // Nothing of the old database's journal may remain at the live name…
+    for (const suffix of ['-wal', '-shm', '-journal']) {
+      expect(existsSync(`${dbPath}${suffix}`)).toBe(false);
+    }
+    // …and it travels with the previous database.
+    for (const suffix of ['-wal', '-shm', '-journal']) {
+      expect(existsSync(`${previousPath}${suffix}`)).toBe(true);
+    }
   });
 
   test('corrupt archives are refused and the live database is untouched', () => {
