@@ -530,20 +530,22 @@ jobs:
           Expand-Archive -Path $archive.FullName -DestinationPath $env:QA_STAGE -Force
           $installDir = Join-Path $env:QA_INSTALL 'Programs\Dentiva'
 
-          powershell -ExecutionPolicy Bypass -NoProfile -File (Join-Path $env:QA_STAGE 'install.ps1') -InstallDir $installDir -Desktop:$false
+          powershell -ExecutionPolicy Bypass -NoProfile -File (Join-Path $env:QA_STAGE 'install.ps1') -InstallDir $installDir
           if ($LASTEXITCODE -ne 0) { throw "install.ps1 failed with exit code $LASTEXITCODE" }
 
           $installedExe = Join-Path $installDir 'DENTIVA.exe'
           foreach ($relative in 'DENTIVA.exe', 'uninstall.ps1', 'icon.ico', 'docs\USER-GUIDE.md') {
             if (-not (Test-Path (Join-Path $installDir $relative))) { $problems += "the installer did not create $relative" }
           }
+          # Start Menu and desktop shortcuts, with the icon the executable carries.
+          $shell = New-Object -ComObject WScript.Shell
           $startMenu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Dentiva.lnk'
-          if (-not (Test-Path $startMenu)) { $problems += "no Start Menu shortcut at $startMenu" }
-          else {
-            $shell = New-Object -ComObject WScript.Shell
-            $shortcut = $shell.CreateShortcut($startMenu)
-            Write-Host "  shortcut target: $($shortcut.TargetPath) · icon: $($shortcut.IconLocation)"
-            if ($shortcut.TargetPath -ne $installedExe) { $problems += "the shortcut points at '$($shortcut.TargetPath)'" }
+          $desktop = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Dentiva.lnk'
+          foreach ($link in @($startMenu, $desktop)) {
+            if (-not (Test-Path $link)) { $problems += "no shortcut at $link"; continue }
+            $shortcut = $shell.CreateShortcut($link)
+            Write-Host "  $(Split-Path -Leaf (Split-Path -Parent $link))\$(Split-Path -Leaf $link): target $($shortcut.TargetPath) · icon $($shortcut.IconLocation)"
+            if ($shortcut.TargetPath -ne $installedExe) { $problems += "the shortcut $link points at '$($shortcut.TargetPath)'" }
             if ($shortcut.IconLocation -notlike "$installedExe*") { $problems += "the shortcut icon is '$($shortcut.IconLocation)'" }
           }
           $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Dentiva'
@@ -569,6 +571,7 @@ jobs:
           powershell -ExecutionPolicy Bypass -NoProfile -File (Join-Path $installDir 'uninstall.ps1') -Force
           if (Test-Path $installedExe) { $problems += 'the uninstall left the program behind' }
           if (Test-Path $startMenu) { $problems += 'the uninstall left the Start Menu shortcut' }
+          if (Test-Path $desktop) { $problems += 'the uninstall left the desktop shortcut' }
           if (Test-Path $uninstallKey) { $problems += 'the uninstall left the Apps & features entry' }
           if (-not (Test-Path $marker)) { $problems += 'the uninstall deleted clinic data' }
           else { Write-Host '  clinic data survived the uninstall (as documented)' }
