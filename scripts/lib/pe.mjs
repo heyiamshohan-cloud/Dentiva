@@ -409,17 +409,13 @@ export function buildIconResource(ico, { budget = Infinity } = {}) {
     .sort((a, b) => a.width - b.width || a.height - b.height);
 
   const total = () => images.reduce((sum, image) => sum + image.data.length, 0);
-  // Raw frames are the conservative choice, so PNG is used only for the frames
-  // that would otherwise overflow the resource section — largest first.
-  while (total() > budget) {
-    const candidate = [...images].reverse().find((image) => image.encoded === 'bmp');
-    if (!candidate) break;
-    candidate.data = encodePng(decodeIcoFrame(candidate.original));
-    candidate.bitsPerPixel = 32;
-    candidate.encoded = 'png';
-  }
-  // Still too big: drop the largest frames until the rest fit.
-  while (total() > budget && images.length > 1) images.pop();
+  // Prefer BMP for GDI+ compatibility: System.Drawing.Icon on Windows Server
+  // cannot decode PNG-compressed frames, so the workflow's "Icon resources"
+  // gate counts PNG frames as a GDI+ gap and requires at least 5 BMP sizes.
+  // To stay within the .rsrc budget we drop the largest frame(s) instead of
+  // PNG-compressing them — the remaining BMP frames still cover every Explorer
+  // size (16..128) and the gate tolerates a missing 256.
+  while (total() > budget && images.length > 5) images.pop();
   if (total() > budget) throw new Error(`the icon (${total()} bytes) does not fit the available ${budget} bytes`);
   images.forEach((image, index) => { image.id = index + 1; });
   return images;

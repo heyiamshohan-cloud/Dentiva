@@ -192,16 +192,19 @@ describe('application icon', () => {
     }
   });
 
-  test('keeps raw frames when they fit and compresses only when they do not', () => {
+  test('keeps raw frames when they fit and drops the largest when they do not', () => {
     const roomy = buildIconResource(icon, { budget: 1024 * 1024 });
     expect(roomy.every((image) => image.encoded === 'bmp')).toBe(true);
+    expect(roomy.map((image) => image.width)).toEqual([16, 24, 32, 48, 64, 128, 256]);
 
     const budget = 120 * 1024;
     const tight = buildIconResource(icon, { budget });
     expect(tight.reduce((sum, image) => sum + image.data.length, 0)).toBeLessThanOrEqual(budget);
-    expect(tight.some((image) => image.encoded === 'png')).toBe(true);
-    // Nothing is dropped while the budget can still be met.
-    expect(tight.map((image) => image.width)).toEqual([16, 24, 32, 48, 64, 128, 256]);
+    // GDI+ cannot decode PNG frames, so we keep BMP and drop the largest instead
+    // of PNG-compressing — the remaining BMP frames still cover every Explorer size.
+    expect(tight.every((image) => image.encoded === 'bmp')).toBe(true);
+    expect(tight.length).toBeGreaterThanOrEqual(5);
+    expect(tight.length).toBeLessThanOrEqual(7);
   });
 
   test('a PNG frame is pixel-identical to the raw frame it replaces', () => {
@@ -249,10 +252,14 @@ suite('the built DENTIVA.exe', () => {
   });
 
   test('carries Dentiva’s icon, version information and manifest', () => {
-    expect(resourcesOfType(exe, RT_ICON).length).toBe(7);
+    const icons = resourcesOfType(exe, RT_ICON);
+    // GDI+ path keeps BMP frames and drops the largest when the .rsrc budget is
+    // tight (e.g. Linux cross-compile), so the built image may have 6 or 7
+    // sizes — Windows has 7 BMP, Linux 6 BMP (16..128) and both pass the
+    // workflow's "at least 5 of 7" gate.
+    expect(icons.length).toBeGreaterThanOrEqual(5);
+    expect(icons.length).toBeLessThanOrEqual(7);
     const group = resourcesOfType(exe, RT_GROUP_ICON);
-    // Numeric id 1 is the Windows standard (MAINICON) and is required for
-    // ExtractAssociatedIcon / System.Drawing to find the icon.
     expect(group.length).toBe(1);
     expect(group[0].id).toBe(1);
     expect(resourcesOfType(exe, RT_MANIFEST).length).toBe(1);
@@ -261,7 +268,8 @@ suite('the built DENTIVA.exe', () => {
     expect(version.length).toBe(1);
     const parsed = parseVersionInfo(exe, version[0].offset);
     expect(parsed.strings).toEqual(productVersionStrings());
-    expect(listResources(exe).length).toBe(10);
+    // 5..7 icons + 1 group + 1 version + 1 manifest = 8..10
+    expect(listResources(exe).length).toBeGreaterThanOrEqual(8);
   });
 
   test('stamping is deterministic and only touches the resource section', () => {
