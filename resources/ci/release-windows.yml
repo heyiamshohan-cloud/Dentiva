@@ -840,7 +840,11 @@ jobs:
             Write-Host "::warning::application came up on $($instance.port) instead of $port"
           }
 
-          $profile = Join-Path $env:TEMP 'dentiva-edge-pdf'
+          # The print engine's version belongs in the run record: this
+          # invocation has had engine regressions before, and a failure
+          # without a version attached is undiagnosable.
+          $edgeVersion = ((& $edge --version 2>$null) | Out-String).Trim()
+          Write-Host "  print engine: $edgeVersion"
 
           $expected = @{
             A4        = @(595, 842)
@@ -866,19 +870,39 @@ jobs:
 
               $url = 'file:///' + $file.FullName.Replace('\', '/')
 
+              # A fresh profile per document, forward-slash output path,
+              # and SmartScreen disabled: Edge 141's headless print path
+              # regressed, and this is the argument shape that survived
+              # the regression. The engine's own output is kept — a
+              # failed print must arrive with the engine's words behind
+              # it, not just our complaint.
+              $profile = Join-Path $env:TEMP ("dentiva-edge-pdf-" + $file.BaseName)
+              $engineLog = Join-Path $outputs ($file.BaseName + '.engine.log')
+
               & $edge `
                 --headless=new `
                 --disable-gpu `
                 --no-first-run `
+                --smartscreen-disable `
                 --no-pdf-header-footer `
                 --user-data-dir="$profile" `
                 --virtual-time-budget=20000 `
-                --print-to-pdf="$pdf" `
-                $url 2>$null |
+                --print-to-pdf="$($pdf.Replace('\', '/'))" `
+                $url 2> $engineLog |
                 Out-Null
 
+              Remove-Item -Recurse -Force -Path $profile -ErrorAction SilentlyContinue
+
               if (-not (Test-Path $pdf)) {
-                $problems += "the $($file.BaseName) document produced no PDF"
+                $engineSaid = ''
+                if (Test-Path $engineLog) {
+                  $engineSaid = (
+                    Get-Content $engineLog |
+                      Where-Object { $_ -ne '' } |
+                      Select-Object -First 4
+                  ) -join ' | '
+                }
+                $problems += "the $($file.BaseName) document produced no PDF ($edgeVersion; engine: $engineSaid)"
                 continue
               }
 
@@ -998,14 +1022,20 @@ jobs:
           try {
             $profile = Join-Path $env:TEMP 'dentiva-edge-qa'
 
+            $edgeVersion = ((& $edge --version 2>$null) | Out-String).Trim()
+            Write-Host "  render engine: $edgeVersion"
+
+            $renderLog = Join-Path $data 'edge-render.log'
+
             $dom = & $edge `
               --headless=new `
               --disable-gpu `
               --no-first-run `
+              --smartscreen-disable `
               --user-data-dir="$profile" `
               --virtual-time-budget=15000 `
               --dump-dom `
-              $instance.url 2>$null
+              $instance.url 2> $renderLog
 
             $domText = ($dom -join "`n")
 
