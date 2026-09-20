@@ -98,12 +98,10 @@ beforeAll(() => {
     ctx,
     patientIds: [],
     cleanup() {
-      try {
-        closeDatabase();
-      } catch {
-        /* ignore */
-      }
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 80);
+      try { db.close(); } catch { /* ignore */ }
+      try { closeDatabase(db); } catch { /* ignore */ }
+      try { closeDatabase(); } catch { /* ignore */ }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
       let lastError = null;
       for (let attempt = 1; attempt <= 8; attempt++) {
         try {

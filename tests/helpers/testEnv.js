@@ -62,13 +62,13 @@ export function createTestEnv(options = {}) {
     clinicId: null,
     admin: null,
     cleanup() {
-      try {
-        closeDatabase();
-      } catch {
-        /* ignore */
-      }
-      // Give Windows a moment to release the WAL lock after closeDatabase()
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 80);
+      try { db.close(); } catch { /* ignore */ }
+      try { closeDatabase(db); } catch { /* ignore */ }
+      try { closeDatabase(dir); } catch { /* ignore */ }
+      try { closeDatabase(dbPath); } catch { /* ignore */ }
+      try { closeDatabase(); } catch { /* ignore */ }
+      // Give Windows a moment to release the WAL lock after close
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 120);
       try {
         removeDirWithRetrySync(dir);
       } catch (error) {

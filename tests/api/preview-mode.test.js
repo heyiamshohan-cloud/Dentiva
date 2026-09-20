@@ -48,6 +48,8 @@ beforeAll(async () => {
 }, 60000);
 
 afterAll(async () => {
+  try { packaged?.db?.close(); } catch {}
+  try { preview?.db?.close(); } catch {}
   try {
     packaged?.stop();
   } catch {
@@ -58,7 +60,9 @@ afterAll(async () => {
   } catch {
     /* ignore */
   }
-  await new Promise((r) => setTimeout(r, 80));
+  try { packaged?.db?.close(); } catch {}
+  try { preview?.db?.close(); } catch {}
+  await new Promise((r) => setTimeout(r, 200));
   for (const dir of dirs) {
     let lastError = null;
     for (let attempt = 1; attempt <= 8; attempt++) {

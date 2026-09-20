@@ -84,12 +84,10 @@ describe('automatic backup — running it', () => {
   });
 
   afterEach(async () => {
-    try {
-      closeDatabase();
-    } catch {
-      /* ignore */
-    }
-    await new Promise((r) => setTimeout(r, 80));
+    try { db?.close(); } catch { /* ignore */ }
+    try { closeDatabase(db); } catch { /* ignore */ }
+    try { closeDatabase(); } catch { /* ignore */ }
+    await new Promise((r) => setTimeout(r, 200));
     let lastError = null;
     for (let attempt = 1; attempt <= 8; attempt++) {
       try {

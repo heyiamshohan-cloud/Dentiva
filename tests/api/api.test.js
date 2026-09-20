@@ -71,9 +71,11 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  try { app?.db?.close(); } catch {}
   try { app?.stop(); } catch {}
+  try { app?.db?.close(); } catch {}
   // Windows: give the DB a moment to release WAL/SHM locks
-  await new Promise((r) => setTimeout(r, 80));
+  await new Promise((r) => setTimeout(r, 200));
   if (dataDir && existsSync(dataDir)) {
     let lastError = null;
     for (let attempt = 1; attempt <= 8; attempt++) {

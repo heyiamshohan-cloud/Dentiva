@@ -18,6 +18,8 @@ import { mkdirSync } from 'node:fs';
 let instance = null;
 /** @type {string | null} */
 let instancePath = null;
+/** Track every opened handle so concurrent tests can be closed reliably on Windows. */
+const tracked = new Map();
 
 const PRAGMAS = [
   'PRAGMA journal_mode = WAL',
@@ -51,6 +53,7 @@ export function openDatabase(filePath, options = {}) {
   if (!options.readonly) {
     instance = db;
     instancePath = filePath;
+    tracked.set(filePath, db);
   }
   return db;
 }
@@ -61,17 +64,40 @@ export function getDb() {
   return instance;
 }
 
-export function closeDatabase() {
-  if (instance) {
-    try {
-      instance.exec('PRAGMA wal_checkpoint(TRUNCATE)');
-    } catch {
-      /* checkpoint is best effort */
+/**
+ * @param {any} [target] - a Database instance, a file path, or null to close all
+ */
+export function closeDatabase(target = null) {
+  // Close a specific handle when the caller knows the path or the Database object
+  if (target && typeof target === 'string') {
+    const db = tracked.get(target);
+    if (db) {
+      try { /** @type {any} */ (db).exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch { /* ignore */ }
+      try { /** @type {any} */ (db).close(); } catch { /* ignore */ }
+      tracked.delete(target);
+      if (instancePath === target) { instance = null; instancePath = null; }
     }
-    instance.close();
-    instance = null;
-    instancePath = null;
+    return;
   }
+  if (target && typeof target === 'object' && typeof target.close === 'function') {
+    try { /** @type {any} */ (target).exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch { /* ignore */ }
+    try { /** @type {any} */ (target).close(); } catch { /* ignore */ }
+    for (const [path, db] of tracked) if (db === target) { tracked.delete(path); if (instance === target) { instance = null; instancePath = null; } break; }
+    if (instance === target) { instance = null; instancePath = null; }
+    return;
+  }
+  // Close the singleton and any other tracked handles (covers concurrent tests on Windows)
+  for (const [path, db] of [...tracked.entries()]) {
+    try { /** @type {any} */ (db).exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch { /* ignore */ }
+    try { /** @type {any} */ (db).close(); } catch { /* ignore */ }
+    tracked.delete(path);
+  }
+  if (instance) {
+    try { /** @type {any} */ (instance).exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch { /* ignore */ }
+    try { /** @type {any} */ (instance).close(); } catch { /* ignore */ }
+  }
+  instance = null;
+  instancePath = null;
 }
 
 export function currentDatabasePath() {

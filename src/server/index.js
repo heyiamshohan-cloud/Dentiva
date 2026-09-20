@@ -444,7 +444,9 @@ export async function startServer(options) {
     stop() {
       stopScheduler();
       server.stop(true);
-      closeDatabase();
+      try { closeDatabase(prepared.db); } catch {}
+      try { closeDatabase(prepared.dbPath); } catch {}
+      try { closeDatabase(); } catch {}
     },
   };
 }

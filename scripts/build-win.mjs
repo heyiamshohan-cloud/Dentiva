@@ -220,7 +220,7 @@ if (!noPackage) {
 
 const manifest = artifacts
   .filter((path) => existsSync(path))
-  .map((path) => `${sha256(path)}  ${basename(path)}`)
+  .map((path) => `${sha256(path)}  ${relative(DIST, path).replace(/\\/g, '/')}`)
   .join('\n');
 writeFileSync(join(DIST, 'SHA256SUMS.txt'), `${manifest}\n`);
 artifacts.push(join(DIST, 'SHA256SUMS.txt'));
