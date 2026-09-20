@@ -1,57 +1,45 @@
 name: Build and verify the Windows release
 
 # INSTALLING THIS WORKFLOW
-#   Copy this file to `.github/workflows/release-windows.yml` and push it with an
-#   account or GitHub App that holds the `workflows` permission. The automation
-#   account that maintains this repository does not have it, which is why the
-#   file lives under `resources/ci/` and has to be copied once by hand.
+# Copy this file to .github/workflows/release-windows.yml.
 #
-# WHAT IT DOES
-#   Produces and *proves* the real DENTIVA.exe on a Windows runner:
+# This workflow builds and verifies the real Dentiva Windows x64 release.
 #
-#     1. quality gates      i18n catalogue, TypeScript, the full test suite,
-#                           the renderer sweep
-#     2. native build       Bun compiles on Windows, so the icon and the version
-#                           resource are stamped by the compiler *and* rewritten
-#                           from source by `scripts/stamp-exe.mjs`, giving the
-#                           same resources as the cross-compiled artefact
-#     3. identity gate      the executable is re-read: PE headers, x86-64, GUI
-#                           subsystem, every icon size, Explorer's metadata,
-#                           manifest, checksums, archive contents, no synthetic
-#                           data and no compiler identity ("Oven"/"Bun")
-#     4. self-test          DENTIVA.exe --self-test on a clean, empty data folder
-#                           must report ok / 1.0.0 / build 100 / schema 10
-#     5. packaged QA        the end-to-end clinic run in `scripts/qa-packaged.mjs`
-#                           against the running executable: first-run setup,
-#                           sign-in, a Bengali patient, clinical notes, a plan, a
-#                           prescription, an invoice with a part payment, stock,
-#                           attachments (unicode names, traversal and allow-list
-#                           refusals), printed documents, all reports, backup,
-#                           verify, restore and the audit trail
-#     6. render check       Edge (real Chromium) renders the running application
-#                           and the DOM is asserted, not just an HTTP 200
-#     7. installer          install → shortcut → registry → launch → uninstall
-#                           from the released archive, proving clinic data
-#                           survives an uninstall; plus the portable layout
-#     8. Defender scan      recorded verbatim as evidence, never as a claim
-#     9. release            on a tag: executable, archive and checksums attached
+# It performs:
+#   1. quality gates
+#   2. native Windows build
+#   3. PE / VERSIONINFO / icon verification
+#   4. application self-test
+#   5. packaged end-to-end clinic QA
+#   6. PDF / print-engine verification
+#   7. real Edge rendering
+#   8. scaling/layout checks
+#   9. installer / shortcut / registry / uninstall checks
+#  10. portable-mode verification
+#  11. Defender evidence
+#  12. signing-status evidence
+#  13. release artifact upload
+#  14. GitHub Release publication
 #
-#   Nothing here weakens a gate: every step that fails stops the run.
+# Important:
+# runner.temp cannot be used in a job-level env block.
+# QA paths are therefore exported through GITHUB_ENV from a running pwsh step.
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version tag to publish (for example v1.0.0)'
+        description: "Version tag to publish (for example v1.0.0)"
         required: true
-        default: 'v1.0.0'
+        default: "v1.0.0"
       publish:
-        description: 'Create the GitHub release after everything passes'
+        description: "Create the GitHub release after everything passes"
         type: boolean
         default: true
+
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 permissions:
   contents: write
@@ -61,11 +49,6 @@ jobs:
     name: DENTIVA ${{ github.event.inputs.version || github.ref_name }} on Windows
     runs-on: windows-latest
     timeout-minutes: 90
-    env:
-      QA_DATA: ${{ runner.temp }}\dentiva-qa
-      QA_STAGE: ${{ runner.temp }}\dentiva-stage
-      QA_INSTALL: ${{ runner.temp }}\dentiva-install
-      QA_PORTABLE: ${{ runner.temp }}\dentiva-portable
 
     steps:
       - name: Checkout
@@ -74,7 +57,7 @@ jobs:
       - name: Set up Bun 1.4.2
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: '1.4.2'
+          bun-version: "1.4.2"
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -94,58 +77,108 @@ jobs:
           bun scripts/check-i18n.mjs
           bun x tsc --noEmit
           bun test tests/
-          # The suite already includes the large-data budgets (tests/qa); this
-          # walks every screen through the renderer with jsdom.
           bun run qa:renderer
 
       - name: Build DENTIVA.exe, archive and checksums
         run: bun scripts/build-win.mjs --skip-tests
-        # The build stamps the icon and VERSIONINFO into the PE resources, writes
-        # the release archive and the checksums, and finishes by running
-        # `scripts/verify-artifacts.mjs` — the release gate.
 
       - name: Test helpers for the steps below
         shell: pwsh
         run: |
+          Add-Content -Path $env:GITHUB_ENV -Encoding utf8 -Value "QA_DATA=$($env:RUNNER_TEMP)\dentiva-qa"
+          Add-Content -Path $env:GITHUB_ENV -Encoding utf8 -Value "QA_STAGE=$($env:RUNNER_TEMP)\dentiva-stage"
+          Add-Content -Path $env:GITHUB_ENV -Encoding utf8 -Value "QA_INSTALL=$($env:RUNNER_TEMP)\dentiva-install"
+          Add-Content -Path $env:GITHUB_ENV -Encoding utf8 -Value "QA_PORTABLE=$($env:RUNNER_TEMP)\dentiva-portable"
+
           $profileDir = Split-Path -Parent $PROFILE.CurrentUserAllHosts
           New-Item -ItemType Directory -Force -Path $profileDir | Out-Null
+
           @'
           function Start-Dentiva {
-            # DENTIVA.exe is a Windows *GUI* subsystem program: PowerShell's call
-            # operator does not wait for it, so everything here goes through
-            # Start-Process and instance.json.
-            param([string]$Exe, [string]$Data, [int]$Port = 0)
+            param(
+              [string]$Exe,
+              [string]$Data,
+              [int]$Port = 0
+            )
+
             New-Item -ItemType Directory -Force -Path $Data | Out-Null
-            $arguments = @('--no-window', '--quiet', '--data', $Data)
-            if ($Port -gt 0) { $arguments += @('--port', "$Port") }
-            $app = Start-Process -FilePath $Exe -ArgumentList $arguments -PassThru
+
+            $arguments = @(
+              '--no-window',
+              '--quiet',
+              '--data',
+              $Data
+            )
+
+            if ($Port -gt 0) {
+              $arguments += @('--port', "$Port")
+            }
+
+            $app = Start-Process `
+              -FilePath $Exe `
+              -ArgumentList $arguments `
+              -PassThru
+
             $instanceFile = Join-Path $Data 'instance.json'
             $deadline = (Get-Date).AddSeconds(60)
+
             while (-not (Test-Path $instanceFile) -and (Get-Date) -lt $deadline) {
-              if ($app.HasExited) { throw "Dentiva exited during start-up with code $($app.ExitCode)" }
+              if ($app.HasExited) {
+                throw "Dentiva exited during start-up with code $($app.ExitCode)"
+              }
+
               Start-Sleep -Milliseconds 500
             }
-            if (-not (Test-Path $instanceFile)) { throw 'Dentiva did not write instance.json within 60 seconds' }
+
+            if (-not (Test-Path $instanceFile)) {
+              throw 'Dentiva did not write instance.json within 60 seconds'
+            }
+
             $instance = Get-Content $instanceFile | ConvertFrom-Json
+
             Write-Host "  running on $($instance.url) (pid $($instance.pid), started $($instance.startedAt))"
+
             return $instance
           }
 
           function Stop-Dentiva {
-            param([string]$Exe, [string]$Data, [string]$Logs)
-            Start-Process -FilePath $Exe -ArgumentList '--stop', '--data', $Data -Wait -PassThru -WindowStyle Hidden | Out-Null
+            param(
+              [string]$Exe,
+              [string]$Data,
+              [string]$Logs
+            )
+
+            Start-Process `
+              -FilePath $Exe `
+              -ArgumentList '--stop', '--data', $Data `
+              -Wait `
+              -PassThru `
+              -WindowStyle Hidden | Out-Null
+
             $instanceFile = Join-Path $Data 'instance.json'
+
             if (Test-Path $instanceFile) {
               $appPid = (Get-Content $instanceFile | ConvertFrom-Json).pid
               $deadline = (Get-Date).AddSeconds(30)
-              while ((Get-Process -Id $appPid -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 300 }
+
+              while (
+                (Get-Process -Id $appPid -ErrorAction SilentlyContinue) `
+                -and (Get-Date) -lt $deadline
+              ) {
+                Start-Sleep -Milliseconds 300
+              }
+
               if (Get-Process -Id $appPid -ErrorAction SilentlyContinue) {
                 Write-Host "::warning::Dentiva pid $appPid ignored --stop; killing it"
                 Stop-Process -Id $appPid -Force -ErrorAction SilentlyContinue
               }
             }
+
             if ($Logs -and (Test-Path (Join-Path $Logs 'logs'))) {
-              $log = Get-ChildItem (Join-Path $Logs 'logs') -Filter '*.log' | Sort-Object LastWriteTime | Select-Object -Last 1
+              $log = Get-ChildItem (Join-Path $Logs 'logs') -Filter '*.log' |
+                Sort-Object LastWriteTime |
+                Select-Object -Last 1
+
               if ($log) {
                 Write-Host "  --- $($log.Name) (last 30 lines)"
                 Get-Content $log.FullName -Tail 30 | Write-Host
@@ -154,61 +187,123 @@ jobs:
           }
 
           function Get-DentivaEdge {
-            # The browser the application actually uses for its window.
             $candidates = @(
               "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe",
               "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe",
               "$env:LOCALAPPDATA\Microsoft\Edge\Application\msedge.exe"
             )
-            foreach ($candidate in $candidates) { if ($candidate -and (Test-Path $candidate)) { return $candidate } }
+
+            foreach ($candidate in $candidates) {
+              if ($candidate -and (Test-Path $candidate)) {
+                return $candidate
+              }
+            }
+
             return $null
           }
 
           function Invoke-DentivaSelfTest {
-            param([string]$Exe, [string]$Data)
+            param(
+              [string]$Exe,
+              [string]$Data
+            )
+
             New-Item -ItemType Directory -Force -Path $Data | Out-Null
-            $stdout = Join-Path $env:TEMP ('dentiva-selftest-' + [Guid]::NewGuid().ToString('n').Substring(0, 8) + '.out')
+
+            $stdout = Join-Path `
+              $env:TEMP `
+              ('dentiva-selftest-' + [Guid]::NewGuid().ToString('n').Substring(0, 8) + '.out')
+
             $stderr = "$stdout.err"
-            $process = Start-Process -FilePath $Exe -ArgumentList '--self-test', '--data', $Data `
-              -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+
+            $process = Start-Process `
+              -FilePath $Exe `
+              -ArgumentList '--self-test', '--data', $Data `
+              -Wait `
+              -PassThru `
+              -RedirectStandardOutput $stdout `
+              -RedirectStandardError $stderr
+
             $text = Get-Content $stdout -Raw -ErrorAction SilentlyContinue
+
             Get-Content $stderr -ErrorAction SilentlyContinue | Write-Host
+
             Remove-Item $stdout, $stderr -Force -ErrorAction SilentlyContinue
-            if (-not $text) { throw "$Exe --self-test printed nothing (exit code $($process.ExitCode))" }
-            return [pscustomobject]@{ ExitCode = $process.ExitCode; Report = ($text | ConvertFrom-Json) }
+
+            if (-not $text) {
+              throw "$Exe --self-test printed nothing (exit code $($process.ExitCode))"
+            }
+
+            return [pscustomobject]@{
+              ExitCode = $process.ExitCode
+              Report = ($text | ConvertFrom-Json)
+            }
           }
           '@ | Out-File -Append -Encoding utf8 $PROFILE.CurrentUserAllHosts
+
           Write-Host "helpers written to $($PROFILE.CurrentUserAllHosts)"
 
       - name: Report the artifacts
         shell: pwsh
         run: |
-          Get-ChildItem dist\windows\DENTIVA.exe, dist\*.zip, dist\SHA256SUMS.txt |
-            Select-Object Name, Length, LastWriteTime | Format-Table -AutoSize
+          Get-ChildItem `
+            dist\windows\DENTIVA.exe, `
+            dist\*.zip, `
+            dist\SHA256SUMS.txt |
+            Select-Object Name, Length, LastWriteTime |
+            Format-Table -AutoSize
+
           Get-Content dist\SHA256SUMS.txt
+
           $exe = Get-Item dist\windows\DENTIVA.exe
+
           "EXE_BYTES=$($exe.Length)" >> $env:GITHUB_ENV
+
           "EXE_SHA256=$((Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLower())" >> $env:GITHUB_ENV
 
-          # Re-verify the published checksums on Windows, byte for byte.
           $problems = @()
+
           foreach ($line in Get-Content dist\SHA256SUMS.txt) {
-            if (-not $line.Trim()) { continue }
+            if (-not $line.Trim()) {
+              continue
+            }
+
             $parts = $line -split '\s+', 2
             $expected = $parts[0].Trim().ToLower()
             $name = $parts[1].Trim()
+
             $file = Get-Item (Join-Path 'dist' $name)
             $actual = (Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLower()
-            Write-Host ("  {0,-32} {1}" -f $name, $(if ($actual -eq $expected) { 'matches SHA256SUMS.txt' } else { 'MISMATCH' }))
-            if ($actual -ne $expected) { $problems += "$name does not match the published SHA-256" }
+
+            Write-Host (
+              "  {0,-32} {1}" -f `
+              $name, `
+              $(if ($actual -eq $expected) {
+                'matches SHA256SUMS.txt'
+              } else {
+                'MISMATCH'
+              })
+            )
+
+            if ($actual -ne $expected) {
+              $problems += "$name does not match the published SHA-256"
+            }
           }
-          if ($problems.Count) { $problems | ForEach-Object { Write-Host "::error::$_" }; exit 1 }
+
+          if ($problems.Count) {
+            $problems | ForEach-Object {
+              Write-Host "::error::$_"
+            }
+
+            exit 1
+          }
 
       - name: Explorer metadata and PE headers
         shell: pwsh
         run: |
           $exe = 'dist\windows\DENTIVA.exe'
           $v = (Get-Item $exe).VersionInfo
+
           $expected = @{
             CompanyName      = 'Md. Shohan Khan'
             FileDescription  = 'Dentiva — Dental Practice Management System'
@@ -218,281 +313,630 @@ jobs:
             InternalName     = 'DENTIVA.exe'
             OriginalFilename = 'DENTIVA.exe'
           }
+
           $problems = @()
+
           foreach ($key in $expected.Keys) {
             $actual = $v.$key
-            Write-Host ("  {0,-17} {1}" -f $key, $actual)
-            if ($actual -ne $expected[$key]) { $problems += "$key is '$actual', expected '$expected[$key]'" }
+
+            Write-Host (
+              "  {0,-17} {1}" -f `
+              $key, `
+              $actual
+            )
+
+            if ($actual -ne $expected[$key]) {
+              $problems += "$key is '$actual', expected '$($expected[$key])'"
+            }
           }
-          if ($v.LegalCopyright -notmatch 'Md\. Shohan Khan') { $problems += "LegalCopyright is '$($v.LegalCopyright)'" }
+
+          if ($v.LegalCopyright -notmatch 'Md\. Shohan Khan') {
+            $problems += "LegalCopyright is '$($v.LegalCopyright)'"
+          }
+
           foreach ($foreign in 'Bun', 'Oven', 'bun.exe') {
-            if (($v | Out-String) -match [regex]::Escape($foreign)) { $problems += "compiler identity '$foreign' is still present" }
+            if (($v | Out-String) -match [regex]::Escape($foreign)) {
+              $problems += "compiler identity '$foreign' is still present"
+            }
           }
 
           $bytes = [IO.File]::ReadAllBytes((Resolve-Path $exe))
           $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+
           $checks = @{
-            MZ                  = ($bytes[0] -eq 0x4d -and $bytes[1] -eq 0x5a)
-            PE                  = ([Text.Encoding]::ASCII.GetString($bytes, $peOffset, 4) -eq "PE`0`0")
-            x86_64              = ([BitConverter]::ToUInt16($bytes, $peOffset + 4) -eq 0x8664)
-            PE32Plus            = ([BitConverter]::ToUInt16($bytes, $peOffset + 24) -eq 0x20b)
-            WindowsGUISubsystem = ([BitConverter]::ToUInt16($bytes, $peOffset + 24 + 68) -eq 2)
+            MZ = (
+              $bytes[0] -eq 0x4d -and
+              $bytes[1] -eq 0x5a
+            )
+
+            PE = (
+              [Text.Encoding]::ASCII.GetString(
+                $bytes,
+                $peOffset,
+                4
+              ) -eq "PE`0`0"
+            )
+
+            x86_64 = (
+              [BitConverter]::ToUInt16(
+                $bytes,
+                $peOffset + 4
+              ) -eq 0x8664
+            )
+
+            PE32Plus = (
+              [BitConverter]::ToUInt16(
+                $bytes,
+                $peOffset + 24
+              ) -eq 0x20b
+            )
+
+            WindowsGUISubsystem = (
+              [BitConverter]::ToUInt16(
+                $bytes,
+                $peOffset + 24 + 68
+              ) -eq 2
+            )
           }
+
           foreach ($key in $checks.Keys) {
-            Write-Host ("  {0,-20} {1}" -f $key, $checks[$key])
-            if (-not $checks[$key]) { $problems += "PE check failed: $key" }
+            Write-Host (
+              "  {0,-20} {1}" -f `
+              $key, `
+              $checks[$key]
+            )
+
+            if (-not $checks[$key]) {
+              $problems += "PE check failed: $key"
+            }
           }
-          if ($problems.Count) { $problems | ForEach-Object { Write-Host "::error::$_" }; exit 1 }
+
+          if ($problems.Count) {
+            $problems | ForEach-Object {
+              Write-Host "::error::$_"
+            }
+
+            exit 1
+          }
+
           Write-Host 'Explorer metadata and PE headers are correct.'
 
-      - name: Record every embedded resource (frame sizes, formats, strings)
+      - name: Record every embedded resource
         shell: pwsh
         run: |
-          # The repository's own reader walks the resource directory the way
-          # Windows does and decodes every icon frame, including the
-          # PNG-compressed 256-pixel one, so the record below covers the frames
-          # .NET's GDI+ path cannot always decode.
-          bun scripts/stamp-exe.mjs --check dist\windows\DENTIVA.exe 2>&1 | Tee-Object -FilePath resource-report.txt
-          if ($LASTEXITCODE -ne 0) { Write-Host '::error::the executable does not carry Dentiva resources'; exit 1 }
+          bun scripts/stamp-exe.mjs --check dist\windows\DENTIVA.exe 2>&1 |
+            Tee-Object -FilePath resource-report.txt
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host '::error::the executable does not carry Dentiva resources'
+            exit 1
+          }
+
           Write-Host ''
           Write-Host 'Icon frames and Explorer metadata were read back from the released executable.'
 
       - name: Icon resources at every Windows size
         shell: powershell
         run: |
-          # The authoritative icon check is `bun run verify:exe` inside the build
-          # gate (it compares every embedded frame with resources/icon.ico). This
-          # is the independent, Windows-side view: the shell must be able to load
-          # the icon, and the frame Windows picks must not be blank.
           Add-Type -AssemblyName System.Drawing
+
           $exe = (Resolve-Path 'dist\windows\DENTIVA.exe').Path
+
           $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($exe)
-          if (-not $icon) { Write-Host '::error::Windows could not extract an icon from the executable'; exit 1 }
+
+          if (-not $icon) {
+            Write-Host '::error::Windows could not extract an icon from the executable'
+            exit 1
+          }
+
           Write-Host "  associated icon: $($icon.Width)x$($icon.Height)"
           Write-Host '  expected sizes : 16, 24, 32, 48, 64, 128, 256'
+
           function Get-OpaqueSamples($bitmap) {
-            # A real icon has a lot of opaque pixels; a blank or fully transparent
-            # frame (what a broken resource looks like) has none.
-            $opaque = 0; $sampled = 0
-            $stepX = [Math]::Max(1, [int]($bitmap.Width / 8)); $stepY = [Math]::Max(1, [int]($bitmap.Height / 8))
+            $opaque = 0
+            $sampled = 0
+
+            $stepX = [Math]::Max(
+              1,
+              [int]($bitmap.Width / 8)
+            )
+
+            $stepY = [Math]::Max(
+              1,
+              [int]($bitmap.Height / 8)
+            )
+
             for ($x = 0; $x -lt $bitmap.Width; $x += $stepX) {
               for ($y = 0; $y -lt $bitmap.Height; $y += $stepY) {
                 $sampled++
-                if ($bitmap.GetPixel($x, $y).A -gt 0) { $opaque++ }
+
+                if ($bitmap.GetPixel($x, $y).A -gt 0) {
+                  $opaque++
+                }
               }
             }
-            return @{ Opaque = $opaque; Sampled = $sampled }
+
+            return @{
+              Opaque = $opaque
+              Sampled = $sampled
+            }
           }
+
           $bitmap = $icon.ToBitmap()
           $check = Get-OpaqueSamples $bitmap
+
           Write-Host "  associated icon: $($check.Opaque)/$($check.Sampled) sampled pixels are opaque"
-          if ($check.Opaque -eq 0) { Write-Host '::error::Windows loaded a completely transparent icon'; exit 1 }
-          # Every size the shell asks for must come back with real content. The
-          # 256-pixel frame is PNG-compressed (that is how every shipped icon
-          # stores it), which .NET's GDI+ path cannot always decode; when it
-          # cannot, the frame is still validated below by the repository's own
-          # resource reader, which decodes the PNG and reports its size.
+
+          if ($check.Opaque -eq 0) {
+            Write-Host '::error::Windows loaded a completely transparent icon'
+            exit 1
+          }
+
           $gdiPlusGap = @()
+
           foreach ($size in 16, 24, 32, 48, 64, 128, 256) {
             try {
-              $sized = New-Object System.Drawing.Icon($exe, $size, $size)
+              $sized = New-Object System.Drawing.Icon(
+                $exe,
+                $size,
+                $size
+              )
+
               $tile = $sized.ToBitmap()
               $detail = Get-OpaqueSamples $tile
-              Write-Host ("  {0,3}px → {1}x{2}, {3}/{4} sampled pixels opaque" -f $size, $tile.Width, $tile.Height, $detail.Opaque, $detail.Sampled)
-              if ($detail.Opaque -eq 0) { Write-Host "::error::the ${size}px icon frame is empty"; exit 1 }
-              $tile.Dispose(); $sized.Dispose()
-            } catch {
-              Write-Host "  ${size}px — .NET could not decode this frame: $($_.Exception.Message)"
+
+              Write-Host (
+                "  {0,3}px → {1}x{2}, {3}/{4} sampled pixels opaque" -f `
+                $size,
+                $tile.Width,
+                $tile.Height,
+                $detail.Opaque,
+                $detail.Sampled
+              )
+
+              if ($detail.Opaque -eq 0) {
+                Write-Host "::error::the ${size}px icon frame is empty"
+                exit 1
+              }
+
+              $tile.Dispose()
+              $sized.Dispose()
+            }
+            catch {
+              Write-Host (
+                "  ${size}px — .NET could not decode this frame: $($_.Exception.Message)"
+              )
+
               $gdiPlusGap += $size
             }
           }
-          $bitmap.Dispose(); $icon.Dispose()
+
+          $bitmap.Dispose()
+          $icon.Dispose()
+
           if ($gdiPlusGap.Count) {
-            Write-Host "  .NET/GDI+ could not decode: $($gdiPlusGap -join ', ') px — these are PNG-compressed frames, checked by 'bun scripts/stamp-exe.mjs --check' instead."
+            Write-Host (
+              "  .NET/GDI+ could not decode: $($gdiPlusGap -join ', ') px — " +
+              "these are PNG-compressed frames, checked by stamp-exe.mjs instead."
+            )
           }
-          Write-Host 'Icon resources load at every size and are not blank (see resource-report.txt for the frame-by-frame record).'
+
+          Write-Host 'Icon resources load at every size and are not blank.'
 
       - name: Application self-test on a clean data folder
         shell: pwsh
         run: |
           . $PROFILE.CurrentUserAllHosts
+
           $data = Join-Path $env:QA_DATA 'self-test'
-          $result = Invoke-DentivaSelfTest -Exe 'dist\windows\DENTIVA.exe' -Data $data
+
+          $result = Invoke-DentivaSelfTest `
+            -Exe 'dist\windows\DENTIVA.exe' `
+            -Data $data
+
           $report = $result.Report
-          $report | ConvertTo-Json -Depth 4 | Write-Host
-          $banner = & (Resolve-Path 'dist\windows\DENTIVA.exe').Path --version 2>&1
+
+          $report |
+            ConvertTo-Json -Depth 4 |
+            Write-Host
+
+          $banner = & (
+            Resolve-Path 'dist\windows\DENTIVA.exe'
+          ).Path --version 2>&1
+
           Write-Host "  --version: $($banner -join ' ')"
+
           $problems = @()
-          if ($result.ExitCode -ne 0)             { $problems += "--self-test exited with $($result.ExitCode)" }
-          if ($report.ok -ne $true)               { $problems += 'ok is not true' }
-          if ($report.version -ne '1.0.0')        { $problems += "version is $($report.version)" }
-          if ([int]$report.build -ne 100)         { $problems += "build is $($report.build)" }
-          if ([int]$report.schema -ne 10)         { $problems += "schema is $($report.schema)" }
-          if (-not $report.dataDir)               { $problems += 'no data directory reported' }
-          if ($problems.Count) { $problems | ForEach-Object { Write-Host "::error::self-test: $_" }; exit 1 }
-          Get-ChildItem -Recurse $data | Select-Object -First 20 FullName | Format-Table -AutoSize
-          $database = Get-ChildItem -Recurse $data -Filter '*.db' | Select-Object -First 1
-          if (-not $database) { Write-Host '::error::the database was not created in the data folder'; exit 1 }
-          Write-Host "Self-test passed — the packaged executable started, migrated a new database at $($database.FullName) and served its API."
+
+          if ($result.ExitCode -ne 0) {
+            $problems += "--self-test exited with $($result.ExitCode)"
+          }
+
+          if ($report.ok -ne $true) {
+            $problems += 'ok is not true'
+          }
+
+          if ($report.version -ne '1.0.0') {
+            $problems += "version is $($report.version)"
+          }
+
+          if ([int]$report.build -ne 100) {
+            $problems += "build is $($report.build)"
+          }
+
+          if ([int]$report.schema -ne 10) {
+            $problems += "schema is $($report.schema)"
+          }
+
+          if (-not $report.dataDir) {
+            $problems += 'no data directory reported'
+          }
+
+          if ($problems.Count) {
+            $problems | ForEach-Object {
+              Write-Host "::error::self-test: $_"
+            }
+
+            exit 1
+          }
+
+          Get-ChildItem -Recurse $data |
+            Select-Object -First 20 FullName |
+            Format-Table -AutoSize
+
+          $database = Get-ChildItem `
+            -Recurse $data `
+            -Filter '*.db' |
+            Select-Object -First 1
+
+          if (-not $database) {
+            Write-Host '::error::the database was not created in the data folder'
+            exit 1
+          }
+
+          Write-Host (
+            "Self-test passed — database created at $($database.FullName)."
+          )
 
       - name: End-to-end clinic workflow against the packaged executable
         shell: pwsh
         run: |
           . $PROFILE.CurrentUserAllHosts
+
           $exe = 'dist\windows\DENTIVA.exe'
-          $instance = Start-Dentiva -Exe $exe -Data $env:QA_DATA
+
+          $instance = Start-Dentiva `
+            -Exe $exe `
+            -Data $env:QA_DATA
+
           try {
-            bun scripts/qa-packaged.mjs --data $env:QA_DATA --report qa-report.json --documents qa-documents
-            if ($LASTEXITCODE -ne 0) { throw "packaged QA failed with exit code $LASTEXITCODE" }
-          } finally {
-            Stop-Dentiva -Exe $exe -Data $env:QA_DATA -Logs $env:QA_DATA
+            bun scripts/qa-packaged.mjs `
+              --data $env:QA_DATA `
+              --report qa-report.json `
+              --documents qa-documents
+
+            if ($LASTEXITCODE -ne 0) {
+              throw "packaged QA failed with exit code $LASTEXITCODE"
+            }
+          }
+          finally {
+            Stop-Dentiva `
+              -Exe $exe `
+              -Data $env:QA_DATA `
+              -Logs $env:QA_DATA
           }
 
-      - name: Every print document as a PDF (the browser's own print engine)
+      - name: Every print document as a PDF
         shell: pwsh
         run: |
-          # The clinic's "Save as PDF" goes through the browser's print engine, so
-          # this converts the exact HTML the application served (captured by the
-          # packaged QA run, with the stylesheet pointing back at the running
-          # application) into PDF with Edge/Chromium and checks the result.
-          #
-          # Hard checks: a PDF is produced for every one of the twelve document
-          # kinds and the six paper choices, it is a real PDF (header, trailer,
-          # page object) and it is not empty.
-          # Recorded, and reported loudly but not fatal: the MediaBox the engine
-          # chose. Physical paper selection is the print dialog's job, and the
-          # `@page` rule itself is asserted against the served documents in the
-          # packaged QA step.
-          #
-          # No physical printer is used or claimed.
           . $PROFILE.CurrentUserAllHosts
+
           $edge = Get-DentivaEdge
-          if (-not $edge) { Write-Host '::warning::Microsoft Edge is not installed on this runner — PDF checks skipped'; exit 0 }
+
+          if (-not $edge) {
+            Write-Host '::warning::Microsoft Edge is not installed on this runner — PDF checks skipped'
+            exit 0
+          }
+
           $source = 'qa-documents'
-          if (-not (Test-Path $source)) { Write-Host '::error::the packaged QA step did not capture the documents'; exit 1 }
+
+          if (-not (Test-Path $source)) {
+            Write-Host '::error::the packaged QA step did not capture the documents'
+            exit 1
+          }
+
           $outputs = 'qa-pdfs'
-          New-Item -ItemType Directory -Force -Path $outputs | Out-Null
-          # The captured documents load the bundled Inter/Bengali stylesheet from
-          # the running application (that is how the printed page gets its
-          # fonts), so the released executable is started again on the same port
-          # for the duration of this step.
+
+          New-Item `
+            -ItemType Directory `
+            -Force `
+            -Path $outputs |
+            Out-Null
+
           $exe = 'dist\windows\DENTIVA.exe'
-          $first = Get-ChildItem (Join-Path $source '*.html') | Select-Object -First 1
+
+          $first = Get-ChildItem `
+            (Join-Path $source '*.html') |
+            Select-Object -First 1
+
           $port = 0
-          if ($first -and ((Get-Content $first.FullName -Raw) -match 'http://127\.0\.0\.1:(\d+)/')) { $port = [int]$Matches[1] }
-          if ($port -eq 0) { Write-Host '::warning::the captured documents carry no application URL — the PDFs will use fallback fonts' }
-          $instance = Start-Dentiva -Exe $exe -Data $env:QA_DATA -Port $port
-          Write-Host "  documents were served by port $port, the application is running on $($instance.port)"
-          if ($port -ne 0 -and [int]$instance.port -ne $port) { Write-Host "::warning::the application came up on $($instance.port) instead of $port — fonts may fall back" }
+
+          if (
+            $first -and
+            (
+              Get-Content $first.FullName -Raw
+            ) -match 'http://127\.0\.0\.1:(\d+)/'
+          ) {
+            $port = [int]$Matches[1]
+          }
+
+          if ($port -eq 0) {
+            Write-Host '::warning::captured documents contain no application URL — fallback fonts may be used'
+          }
+
+          $instance = Start-Dentiva `
+            -Exe $exe `
+            -Data $env:QA_DATA `
+            -Port $port
+
+          Write-Host "  application is running on $($instance.port)"
+
+          if (
+            $port -ne 0 -and
+            [int]$instance.port -ne $port
+          ) {
+            Write-Host "::warning::application came up on $($instance.port) instead of $port"
+          }
+
           $profile = Join-Path $env:TEMP 'dentiva-edge-pdf'
-          # A4 210x297, A5 148x210, Letter 216x279, Legal 216x356, 80 mm and 58 mm
-          # roll widths at 297 mm of page height, in PDF points (1 pt = 1/72 in).
-          $expected = @{ A4 = @(595, 842); A5 = @(420, 595); Letter = @(612, 792); Legal = @(612, 1008); Receipt80 = @(227, 842); Receipt58 = @(164, 842) }
+
+          $expected = @{
+            A4        = @(595, 842)
+            A5        = @(420, 595)
+            Letter    = @(612, 792)
+            Legal     = @(612, 1008)
+            Receipt80 = @(227, 842)
+            Receipt58 = @(164, 842)
+          }
+
           $problems = @()
           $mismatches = @()
           $made = 0
+
           try {
-          foreach ($file in Get-ChildItem (Join-Path $source '*.html') | Sort-Object Name) {
-            $pdf = Join-Path $outputs ($file.BaseName + '.pdf')
-            $url = 'file:///' + $file.FullName.Replace('\', '/')
-            & $edge --headless=new --disable-gpu --no-first-run --no-pdf-header-footer `
-                    --user-data-dir="$profile" --virtual-time-budget=20000 `
-                    --print-to-pdf="$pdf" $url 2>$null | Out-Null
-            if (-not (Test-Path $pdf)) { $problems += "the $($file.BaseName) document produced no PDF"; continue }
-            $bytes = [IO.File]::ReadAllBytes($pdf)
-            $text = [Text.Encoding]::ASCII.GetString($bytes)
-            if (-not $text.StartsWith('%PDF-')) { $problems += "$($file.BaseName): the output is not a PDF"; continue }
-            if (-not $text.Contains('%%EOF')) { $problems += "$($file.BaseName): the PDF has no trailer"; continue }
-            if (-not ($text -match '/Type\s*/Page[^s]')) { $problems += "$($file.BaseName): the PDF has no page object"; continue }
-            if ($bytes.Length -lt 5000) { $problems += "$($file.BaseName): the PDF is only $($bytes.Length) bytes"; continue }
-            $made++
-            $box = 'not reported by this engine'
-            if ($text -match '/MediaBox\s*\[\s*0(?:\.0+)?\s+0(?:\.0+)?\s+([\d.]+)\s+([\d.]+)') {
-              $width = [double]$Matches[1]; $height = [double]$Matches[2]
-              $box = "$([math]::Round($width)) x $([math]::Round($height)) pt"
-              if ($file.BaseName -like 'paper-*') {
-                $paper = $file.BaseName.Replace('paper-', '')
-                if ($expected.ContainsKey($paper)) {
-                  $want = $expected[$paper]
-                  $fits = ([math]::Abs($width - $want[0]) -le 3) -and ([math]::Abs($height - $want[1]) -le 3)
-                  if (-not $fits) { $mismatches += "$paper is $box, the sheet is $($want[0]) x $($want[1]) pt" }
-                  else { $box = "$box (matches $paper)" }
+            foreach (
+              $file in Get-ChildItem (Join-Path $source '*.html') |
+                Sort-Object Name
+            ) {
+              $pdf = Join-Path `
+                $outputs `
+                ($file.BaseName + '.pdf')
+
+              $url = 'file:///' + $file.FullName.Replace('\', '/')
+
+              & $edge `
+                --headless=new `
+                --disable-gpu `
+                --no-first-run `
+                --no-pdf-header-footer `
+                --user-data-dir="$profile" `
+                --virtual-time-budget=20000 `
+                --print-to-pdf="$pdf" `
+                $url 2>$null |
+                Out-Null
+
+              if (-not (Test-Path $pdf)) {
+                $problems += "the $($file.BaseName) document produced no PDF"
+                continue
+              }
+
+              $bytes = [IO.File]::ReadAllBytes($pdf)
+              $text = [Text.Encoding]::ASCII.GetString($bytes)
+
+              if (-not $text.StartsWith('%PDF-')) {
+                $problems += "$($file.BaseName): output is not a PDF"
+                continue
+              }
+
+              if (-not $text.Contains('%%EOF')) {
+                $problems += "$($file.BaseName): PDF has no trailer"
+                continue
+              }
+
+              if (-not ($text -match '/Type\s*/Page[^s]')) {
+                $problems += "$($file.BaseName): PDF has no page object"
+                continue
+              }
+
+              if ($bytes.Length -lt 5000) {
+                $problems += "$($file.BaseName): PDF is only $($bytes.Length) bytes"
+                continue
+              }
+
+              $made++
+
+              $box = 'not reported by this engine'
+
+              if (
+                $text -match '/MediaBox\s*\[\s*0(?:\.0+)?\s+0(?:\.0+)?\s+([\d.]+)\s+([\d.]+)'
+              ) {
+                $width = [double]$Matches[1]
+                $height = [double]$Matches[2]
+
+                $box = "$([math]::Round($width)) x $([math]::Round($height)) pt"
+
+                if ($file.BaseName -like 'paper-*') {
+                  $paper = $file.BaseName.Replace('paper-', '')
+
+                  if ($expected.ContainsKey($paper)) {
+                    $want = $expected[$paper]
+
+                    $fits = (
+                      [math]::Abs($width - $want[0]) -le 3
+                    ) -and (
+                      [math]::Abs($height - $want[1]) -le 3
+                    )
+
+                    if (-not $fits) {
+                      $mismatches += (
+                        "$paper is $box, expected $($want[0]) x $($want[1]) pt"
+                      )
+                    }
+                    else {
+                      $box = "$box (matches $paper)"
+                    }
+                  }
                 }
               }
+
+              Write-Host (
+                "  {0,-22} {1,8} bytes  {2}" -f `
+                $file.BaseName,
+                $bytes.Length,
+                $box
+              )
             }
-            Write-Host ("  {0,-22} {1,8} bytes  {2}" -f $file.BaseName, $bytes.Length, $box)
           }
-          } finally {
-            Stop-Dentiva -Exe $exe -Data $env:QA_DATA -Logs $env:QA_DATA
+          finally {
+            Stop-Dentiva `
+              -Exe $exe `
+              -Data $env:QA_DATA `
+              -Logs $env:QA_DATA
           }
+
           Write-Host ''
           Write-Host "  $made document PDFs written to $outputs"
+
           if ($mismatches.Count) {
-            Write-Host "::warning::the print engine chose a different sheet than the @page rule asked for (physical paper is chosen by the print dialog):"
-            $mismatches | ForEach-Object { Write-Host "  - $_" }
+            Write-Host '::warning::print engine selected a different MediaBox than requested'
+            $mismatches | ForEach-Object {
+              Write-Host "  - $_"
+            }
           }
-          if ($problems.Count) { $problems | ForEach-Object { Write-Host "::error::PDF: $_" }; exit 1 }
-          Write-Host 'Every document and every paper choice produced a real PDF. No physical printer was involved.'
+
+          if ($problems.Count) {
+            $problems | ForEach-Object {
+              Write-Host "::error::PDF: $_"
+            }
+
+            exit 1
+          }
+
+          Write-Host 'Every document produced a real PDF.'
 
       - name: Real-renderer smoke test (Edge, headless)
         shell: pwsh
         run: |
-          # `qa:renderer` runs jsdom; this is the same application drawn by the
-          # browser a clinic actually uses, asserted from the DOM rather than
-          # from an HTTP status code.
           . $PROFILE.CurrentUserAllHosts
+
           $exe = 'dist\windows\DENTIVA.exe'
           $edge = Get-DentivaEdge
-          if (-not $edge) { Write-Host '::warning::Microsoft Edge is not installed on this runner — render check skipped'; exit 0 }
 
-          $data = Join-Path $env:QA_DATA 'render'
-          $instance = Start-Dentiva -Exe $exe -Data $data
-          try {
-            $profile = Join-Path $env:TEMP 'dentiva-edge-qa'
-            $dom = & $edge --headless=new --disable-gpu --no-first-run --user-data-dir="$profile" `
-                           --virtual-time-budget=15000 --dump-dom $instance.url 2>$null
-            $domText = ($dom -join "`n")
-            $domText | Out-File -Encoding utf8 render-dom.html
-            $markers = @{
-              'application shell' = 'id="app"'
-              'navigation'        = 'id="nav"'
-              'view container'    = 'id="view"'
-              'sidebar'           = 'id="sidebar"'
-              'product name'      = 'Dentiva'
-            }
-            $productName = '(?i)dentiva'
-            $problems = @()
-            foreach ($label in $markers.Keys) {
-              $needle = $markers[$label]
-              if ($label -eq 'product name') { $present = $domText -match $productName }
-              else { $present = $domText.Contains($needle) }
-              Write-Host ("  {0,-18} {1}" -f $label, $present)
-              if (-not $present) { $problems += "the rendered DOM has no $label" }
-            }
-            if ($domText -match 'could not be loaded from the application package') { $problems += 'the rendered page is the startup fallback' }
-            if ($problems.Count) { $problems | ForEach-Object { Write-Host "::error::render check: $_" }; exit 1 }
-            Write-Host "Edge rendered $($domText.Length) bytes of DOM from $($instance.url)."
-          } finally {
-            Stop-Dentiva -Exe $exe -Data $data -Logs $data
+          if (-not $edge) {
+            Write-Host '::warning::Microsoft Edge is not installed on this runner — render check skipped'
+            exit 0
           }
 
-      - name: Layout at 100–200 % scaling and from narrow to maximised windows
+          $data = Join-Path $env:QA_DATA 'render'
+
+          $instance = Start-Dentiva `
+            -Exe $exe `
+            -Data $data
+
+          try {
+            $profile = Join-Path $env:TEMP 'dentiva-edge-qa'
+
+            $dom = & $edge `
+              --headless=new `
+              --disable-gpu `
+              --no-first-run `
+              --user-data-dir="$profile" `
+              --virtual-time-budget=15000 `
+              --dump-dom `
+              $instance.url 2>$null
+
+            $domText = ($dom -join "`n")
+
+            $domText |
+              Out-File `
+                -Encoding utf8 `
+                render-dom.html
+
+            $markers = @{
+              'application shell' = 'id="app"'
+              'navigation' = 'id="nav"'
+              'view container' = 'id="view"'
+              'sidebar' = 'id="sidebar"'
+            }
+
+            $problems = @()
+
+            foreach ($label in $markers.Keys) {
+              $needle = $markers[$label]
+              $present = $domText.Contains($needle)
+
+              Write-Host (
+                "  {0,-18} {1}" -f `
+                $label,
+                $present
+              )
+
+              if (-not $present) {
+                $problems += "rendered DOM has no $label"
+              }
+            }
+
+            if ($domText -notmatch '(?i)dentiva') {
+              $problems += 'rendered DOM has no Dentiva product name'
+            }
+
+            if (
+              $domText -match
+              'could not be loaded from the application package'
+            ) {
+              $problems += 'rendered page is the startup fallback'
+            }
+
+            if ($problems.Count) {
+              $problems | ForEach-Object {
+                Write-Host "::error::render check: $_"
+              }
+
+              exit 1
+            }
+
+            Write-Host "Edge rendered $($domText.Length) bytes of DOM."
+          }
+          finally {
+            Stop-Dentiva `
+              -Exe $exe `
+              -Data $data `
+              -Logs $data
+          }
+
+      - name: Layout at 100–200 percent scaling
         shell: pwsh
         run: |
-          # A hosted runner has no physical display, so scaling is exercised in
-          # Chromium (`--force-device-scale-factor`) and by changing the window
-          # size, which is what Windows itself does when the clinic's display is
-          # set to 125 %, 150 %, 175 % or 200 %. Physical-DPI behaviour on a real
-          # desktop stays a user-machine check and is reported as such.
           . $PROFILE.CurrentUserAllHosts
+
           $edge = Get-DentivaEdge
-          if (-not $edge) { Write-Host '::warning::Microsoft Edge is not installed on this runner — scaling checks skipped'; exit 0 }
+
+          if (-not $edge) {
+            Write-Host '::warning::Microsoft Edge is not installed on this runner — scaling checks skipped'
+            exit 0
+          }
+
           $exe = 'dist\windows\DENTIVA.exe'
           $data = Join-Path $env:QA_DATA 'scaling'
-          $instance = Start-Dentiva -Exe $exe -Data $data
+
+          $instance = Start-Dentiva `
+            -Exe $exe `
+            -Data $data
+
           try {
             $profile = Join-Path $env:TEMP 'dentiva-edge-scaling'
             $problems = @()
+
             $cases = @(
               @{ scale = '1';    window = '1280,720';  label = '100% 1280x720' },
               @{ scale = '1.25'; window = '1280,720';  label = '125% 1280x720' },
@@ -502,128 +946,369 @@ jobs:
               @{ scale = '1';    window = '2560,1440'; label = '100% 2560x1440 maximised' },
               @{ scale = '1.25'; window = '1024,768';  label = '125% 1024x768 narrow' }
             )
+
             foreach ($case in $cases) {
-              $dom = & $edge --headless=new --disable-gpu --no-first-run --user-data-dir="$profile" `
-                             --force-device-scale-factor=$($case.scale) --window-size=$($case.window) `
-                             --virtual-time-budget=15000 --dump-dom $instance.url 2>$null
+              $dom = & $edge `
+                --headless=new `
+                --disable-gpu `
+                --no-first-run `
+                --user-data-dir="$profile" `
+                --force-device-scale-factor=$($case.scale) `
+                --window-size=$($case.window) `
+                --virtual-time-budget=15000 `
+                --dump-dom `
+                $instance.url 2>$null
+
               $text = ($dom -join "`n")
-              $ok = $text.Contains('id="view"') -and ($text -match '(?i)dentiva')
-              if ($text -match 'could not be loaded from the application package') { $ok = $false }
-              Write-Host ("  {0,-28} {1}  ({2} bytes of DOM)" -f $case.label, $(if ($ok) { 'rendered' } else { 'FAILED' }), $text.Length)
-              if (-not $ok) { $problems += "the application did not render at $($case.label)" }
-              $text | Out-File -Encoding utf8 (Join-Path (Get-Location) "scaling-$($case.label -replace '[^0-9A-Za-z]+', '-').html")
+
+              $ok = (
+                $text.Contains('id="view"') -and
+                ($text -match '(?i)dentiva')
+              )
+
+              if (
+                $text -match
+                'could not be loaded from the application package'
+              ) {
+                $ok = $false
+              }
+
+              Write-Host (
+                "  {0,-28} {1} ({2} bytes)" -f `
+                $case.label,
+                $(if ($ok) { 'rendered' } else { 'FAILED' }),
+                $text.Length
+              )
+
+              if (-not $ok) {
+                $problems += "application did not render at $($case.label)"
+              }
+
+              $safeName = $case.label -replace '[^0-9A-Za-z]+', '-'
+
+              $text |
+                Out-File `
+                  -Encoding utf8 `
+                  (Join-Path (Get-Location) "scaling-$safeName.html")
             }
-            if ($problems.Count) { $problems | ForEach-Object { Write-Host "::error::scaling: $_" }; exit 1 }
-            Write-Host 'The shell rendered at every scaling step and window size (simulated scaling, real browser).'
-          } finally {
-            Stop-Dentiva -Exe $exe -Data $data -Logs $data
+
+            if ($problems.Count) {
+              $problems | ForEach-Object {
+                Write-Host "::error::scaling: $_"
+              }
+
+              exit 1
+            }
+
+            Write-Host 'Scaling and window-size checks passed.'
+          }
+          finally {
+            Stop-Dentiva `
+              -Exe $exe `
+              -Data $data `
+              -Logs $data
           }
 
-      - name: Installer — install, shortcut, registry, launch, uninstall (data safe)
+      - name: Installer — install, shortcut, registry, launch, uninstall
         shell: pwsh
         run: |
-          # The archive a clinic downloads is what gets installed here, not the
-          # build tree, so the shipped installer and icons are the ones tested.
           . $PROFILE.CurrentUserAllHosts
+
           $problems = @()
-          $archive = Get-ChildItem dist\*.zip | Select-Object -First 1
-          Expand-Archive -Path $archive.FullName -DestinationPath $env:QA_STAGE -Force
-          $installDir = Join-Path $env:QA_INSTALL 'Programs\Dentiva'
 
-          powershell -ExecutionPolicy Bypass -NoProfile -File (Join-Path $env:QA_STAGE 'install.ps1') -InstallDir $installDir
-          if ($LASTEXITCODE -ne 0) { throw "install.ps1 failed with exit code $LASTEXITCODE" }
+          $archive = Get-ChildItem dist\*.zip |
+            Select-Object -First 1
 
-          $installedExe = Join-Path $installDir 'DENTIVA.exe'
-          foreach ($relative in 'DENTIVA.exe', 'uninstall.ps1', 'icon.ico', 'docs\USER-GUIDE.md') {
-            if (-not (Test-Path (Join-Path $installDir $relative))) { $problems += "the installer did not create $relative" }
+          Expand-Archive `
+            -Path $archive.FullName `
+            -DestinationPath $env:QA_STAGE `
+            -Force
+
+          $installDir = Join-Path `
+            $env:QA_INSTALL `
+            'Programs\Dentiva'
+
+          powershell `
+            -ExecutionPolicy Bypass `
+            -NoProfile `
+            -File (Join-Path $env:QA_STAGE 'install.ps1') `
+            -InstallDir $installDir
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "install.ps1 failed with exit code $LASTEXITCODE"
           }
-          # Start Menu and desktop shortcuts, with the icon the executable carries.
+
+          $installedExe = Join-Path `
+            $installDir `
+            'DENTIVA.exe'
+
+          foreach (
+            $relative in @(
+              'DENTIVA.exe',
+              'uninstall.ps1',
+              'icon.ico',
+              'docs\USER-GUIDE.md'
+            )
+          ) {
+            if (-not (Test-Path (Join-Path $installDir $relative))) {
+              $problems += "installer did not create $relative"
+            }
+          }
+
           $shell = New-Object -ComObject WScript.Shell
-          $startMenu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Dentiva.lnk'
-          $desktop = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Dentiva.lnk'
+
+          $startMenu = Join-Path `
+            $env:APPDATA `
+            'Microsoft\Windows\Start Menu\Programs\Dentiva.lnk'
+
+          $desktop = Join-Path `
+            ([Environment]::GetFolderPath('Desktop')) `
+            'Dentiva.lnk'
+
           foreach ($link in @($startMenu, $desktop)) {
-            if (-not (Test-Path $link)) { $problems += "no shortcut at $link"; continue }
+            if (-not (Test-Path $link)) {
+              $problems += "no shortcut at $link"
+              continue
+            }
+
             $shortcut = $shell.CreateShortcut($link)
-            Write-Host "  $(Split-Path -Leaf (Split-Path -Parent $link))\$(Split-Path -Leaf $link): target $($shortcut.TargetPath) · icon $($shortcut.IconLocation)"
-            if ($shortcut.TargetPath -ne $installedExe) { $problems += "the shortcut $link points at '$($shortcut.TargetPath)'" }
-            if ($shortcut.IconLocation -notlike "$installedExe*") { $problems += "the shortcut icon is '$($shortcut.IconLocation)'" }
+
+            Write-Host (
+              "shortcut: target $($shortcut.TargetPath) · icon $($shortcut.IconLocation)"
+            )
+
+            if ($shortcut.TargetPath -ne $installedExe) {
+              $problems += "shortcut points at '$($shortcut.TargetPath)'"
+            }
+
+            if ($shortcut.IconLocation -notlike "$installedExe*") {
+              $problems += "shortcut icon is '$($shortcut.IconLocation)'"
+            }
           }
-          $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Dentiva'
-          if (-not (Test-Path $uninstallKey)) { $problems += 'no entry in Apps & features' }
+
+          $uninstallKey = `
+            'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Dentiva'
+
+          if (-not (Test-Path $uninstallKey)) {
+            $problems += 'no Apps & Features uninstall entry'
+          }
           else {
             $entry = Get-ItemProperty $uninstallKey
-            Write-Host "  Apps & features: $($entry.DisplayName) $($entry.DisplayVersion) — $($entry.Publisher)"
-            if ($entry.DisplayVersion -ne '1.0.0') { $problems += "the uninstall entry reports version $($entry.DisplayVersion)" }
-            if ($entry.Publisher -ne 'Md. Shohan Khan') { $problems += "the uninstall entry reports publisher $($entry.Publisher)" }
-            if ($entry.UninstallString -notmatch 'uninstall\.ps1') { $problems += 'the uninstall entry does not point at uninstall.ps1' }
+
+            Write-Host (
+              "Apps & features: $($entry.DisplayName) $($entry.DisplayVersion) — $($entry.Publisher)"
+            )
+
+            if ($entry.DisplayVersion -ne '1.0.0') {
+              $problems += "uninstall entry reports version $($entry.DisplayVersion)"
+            }
+
+            if ($entry.Publisher -ne 'Md. Shohan Khan') {
+              $problems += "uninstall entry reports publisher $($entry.Publisher)"
+            }
+
+            if ($entry.UninstallString -notmatch 'uninstall\.ps1') {
+              $problems += 'uninstall entry does not point at uninstall.ps1'
+            }
           }
 
-          # The installed copy must start on a throwaway data folder.
-          $result = Invoke-DentivaSelfTest -Exe $installedExe -Data (Join-Path $env:QA_DATA 'installer')
-          Write-Host "  installed executable self-test: ok=$($result.Report.ok) version=$($result.Report.version) build=$($result.Report.build)"
-          if ($result.ExitCode -ne 0 -or $result.Report.ok -ne $true) { $problems += 'the installed executable failed its self-test' }
+          $installerData = Join-Path `
+            $env:QA_DATA `
+            'installer'
 
-          # Clinic data must survive the uninstall.
-          $clinicData = Join-Path $env:LOCALAPPDATA 'Dentiva'
-          New-Item -ItemType Directory -Force -Path $clinicData | Out-Null
-          $marker = Join-Path $clinicData 'uninstall-marker.txt'
-          'clinic data that must survive' | Out-File $marker
-          powershell -ExecutionPolicy Bypass -NoProfile -File (Join-Path $installDir 'uninstall.ps1') -Force
-          if (Test-Path $installedExe) { $problems += 'the uninstall left the program behind' }
-          if (Test-Path $startMenu) { $problems += 'the uninstall left the Start Menu shortcut' }
-          if (Test-Path $desktop) { $problems += 'the uninstall left the desktop shortcut' }
-          if (Test-Path $uninstallKey) { $problems += 'the uninstall left the Apps & features entry' }
-          if (-not (Test-Path $marker)) { $problems += 'the uninstall deleted clinic data' }
-          else { Write-Host '  clinic data survived the uninstall (as documented)' }
-          Remove-Item $marker -Force -ErrorAction SilentlyContinue
+          $result = Invoke-DentivaSelfTest `
+            -Exe $installedExe `
+            -Data $installerData
 
-          if ($problems.Count) { $problems | ForEach-Object { Write-Host "::error::installer: $_" }; exit 1 }
-          Write-Host 'Installer verified: install → shortcuts → registry → launch → uninstall, with data kept.'
+          Write-Host (
+            "installed executable self-test: ok=$($result.Report.ok) version=$($result.Report.version) build=$($result.Report.build)"
+          )
+
+          if (
+            $result.ExitCode -ne 0 -or
+            $result.Report.ok -ne $true
+          ) {
+            $problems += 'installed executable failed self-test'
+          }
+
+          $clinicData = Join-Path `
+            $env:LOCALAPPDATA `
+            'Dentiva'
+
+          New-Item `
+            -ItemType Directory `
+            -Force `
+            -Path $clinicData |
+            Out-Null
+
+          $marker = Join-Path `
+            $clinicData `
+            'uninstall-marker.txt'
+
+          'clinic data that must survive' |
+            Out-File $marker
+
+          powershell `
+            -ExecutionPolicy Bypass `
+            -NoProfile `
+            -File (Join-Path $installDir 'uninstall.ps1') `
+            -Force
+
+          if (Test-Path $installedExe) {
+            $problems += 'uninstall left the program behind'
+          }
+
+          if (Test-Path $startMenu) {
+            $problems += 'uninstall left Start Menu shortcut'
+          }
+
+          if (Test-Path $desktop) {
+            $problems += 'uninstall left desktop shortcut'
+          }
+
+          if (Test-Path $uninstallKey) {
+            $problems += 'uninstall left Apps & Features entry'
+          }
+
+          if (-not (Test-Path $marker)) {
+            $problems += 'uninstall deleted clinic data'
+          }
+          else {
+            Write-Host 'clinic data survived the uninstall'
+          }
+
+          Remove-Item `
+            $marker `
+            -Force `
+            -ErrorAction SilentlyContinue
+
+          if ($problems.Count) {
+            $problems | ForEach-Object {
+              Write-Host "::error::installer: $_"
+            }
+
+            exit 1
+          }
+
+          Write-Host 'Installer verification passed.'
 
       - name: Portable layout from the release archive
         shell: pwsh
         run: |
           . $PROFILE.CurrentUserAllHosts
-          Expand-Archive -Path (Get-ChildItem dist\*.zip | Select-Object -First 1).FullName -DestinationPath $env:QA_PORTABLE -Force
-          $exe = Join-Path $env:QA_PORTABLE 'DENTIVA.exe'
-          if (-not (Test-Path $exe)) { Write-Host '::error::the archive does not contain DENTIVA.exe'; exit 1 }
-          foreach ($name in 'install.cmd', 'install.ps1', 'uninstall.ps1', 'README.md', 'LICENSE', 'THIRD-PARTY-NOTICES.txt', 'icon.ico') {
-            if (-not (Test-Path (Join-Path $env:QA_PORTABLE $name))) { Write-Host "::error::the archive is missing $name"; exit 1 }
-          }
-          powershell -ExecutionPolicy Bypass -NoProfile -File (Join-Path $env:QA_PORTABLE 'install.ps1') -Portable
-          if (-not (Test-Path (Join-Path $env:QA_PORTABLE 'data'))) { Write-Host '::error::portable mode did not create its data folder'; exit 1 }
-          $result = Invoke-DentivaSelfTest -Exe $exe -Data (Join-Path $env:QA_PORTABLE 'data')
-          $result.Report | ConvertTo-Json -Depth 4 | Write-Host
-          if ($result.ExitCode -ne 0 -or $result.Report.ok -ne $true) { Write-Host '::error::the portable copy failed its self-test'; exit 1 }
-          if ($result.Report.dataDir -notlike "$env:QA_PORTABLE*") {
-            Write-Host "::error::portable mode wrote to $($result.Report.dataDir) instead of beside the executable"
+
+          $archive = Get-ChildItem dist\*.zip |
+            Select-Object -First 1
+
+          Expand-Archive `
+            -Path $archive.FullName `
+            -DestinationPath $env:QA_PORTABLE `
+            -Force
+
+          $exe = Join-Path `
+            $env:QA_PORTABLE `
+            'DENTIVA.exe'
+
+          if (-not (Test-Path $exe)) {
+            Write-Host '::error::archive does not contain DENTIVA.exe'
             exit 1
           }
+
+          foreach (
+            $name in @(
+              'install.cmd',
+              'install.ps1',
+              'uninstall.ps1',
+              'README.md',
+              'LICENSE',
+              'THIRD-PARTY-NOTICES.txt',
+              'icon.ico'
+            )
+          ) {
+            if (-not (Test-Path (Join-Path $env:QA_PORTABLE $name))) {
+              Write-Host "::error::archive is missing $name"
+              exit 1
+            }
+          }
+
+          powershell `
+            -ExecutionPolicy Bypass `
+            -NoProfile `
+            -File (Join-Path $env:QA_PORTABLE 'install.ps1') `
+            -Portable
+
+          $portableData = Join-Path `
+            $env:QA_PORTABLE `
+            'data'
+
+          if (-not (Test-Path $portableData)) {
+            Write-Host '::error::portable mode did not create its data folder'
+            exit 1
+          }
+
+          $result = Invoke-DentivaSelfTest `
+            -Exe $exe `
+            -Data $portableData
+
+          $result.Report |
+            ConvertTo-Json -Depth 4 |
+            Write-Host
+
+          if (
+            $result.ExitCode -ne 0 -or
+            $result.Report.ok -ne $true
+          ) {
+            Write-Host '::error::portable copy failed self-test'
+            exit 1
+          }
+
+          if ($result.Report.dataDir -notlike "$env:QA_PORTABLE*") {
+            Write-Host (
+              "::error::portable mode wrote to $($result.Report.dataDir) instead of beside the executable"
+            )
+
+            exit 1
+          }
+
           Write-Host "Portable mode verified — data in $($result.Report.dataDir)"
 
       - name: Windows Defender scan (recorded, not asserted)
         shell: pwsh
         continue-on-error: true
         run: |
-          # Evidence only. A scan without findings is not a guarantee, and this
-          # workflow never claims the software is virus-free.
           $scan = "$env:ProgramFiles\Windows Defender\MpCmdRun.exe"
+
           if (Test-Path $scan) {
-            & $scan -Scan -ScanType 3 -File (Resolve-Path 'dist\windows\DENTIVA.exe').Path 2>&1 |
+            & $scan `
+              -Scan `
+              -ScanType 3 `
+              -File (Resolve-Path 'dist\windows\DENTIVA.exe').Path 2>&1 |
               Tee-Object -FilePath defender-scan.log
-            Write-Host "Defender exit code: $LASTEXITCODE (0 = no threats found)"
-          } else {
-            'Windows Defender CLI is unavailable on this runner.' | Out-File defender-scan.log
+
+            Write-Host "Defender exit code: $LASTEXITCODE"
+          }
+          else {
+            'Windows Defender CLI is unavailable on this runner.' |
+              Out-File defender-scan.log
           }
 
       - name: Signing status (recorded)
         shell: pwsh
         run: |
-          $signature = Get-AuthenticodeSignature (Resolve-Path 'dist\windows\DENTIVA.exe').Path
-          "status=$($signature.Status)" | Tee-Object -FilePath signature-status.txt
+          $signature = Get-AuthenticodeSignature `
+            (Resolve-Path 'dist\windows\DENTIVA.exe').Path
+
+          "status=$($signature.Status)" |
+            Tee-Object -FilePath signature-status.txt
+
           Write-Host "Authenticode status: $($signature.Status)"
-          if ($signature.Status -ne 'NotSigned') { Write-Host "  signer: $($signature.SignerCertificate.Subject)" }
-          else { Write-Host '  no code-signing certificate is used; Windows SmartScreen may warn on first launch (documented in docs/INSTALL.md)' }
+
+          if ($signature.Status -ne 'NotSigned') {
+            Write-Host "  signer: $($signature.SignerCertificate.Subject)"
+          }
+          else {
+            Write-Host '  no code-signing certificate is used; SmartScreen may warn on first launch.'
+          }
 
       - name: Upload the release evidence
         uses: actions/upload-artifact@v4
@@ -647,37 +1332,52 @@ jobs:
         shell: pwsh
         run: |
           $lines = @()
+
           $lines += '## DENTIVA Windows release'
           $lines += ''
           $lines += '| artefact | size | SHA-256 |'
           $lines += '| --- | --- | --- |'
+
           $lines += "| DENTIVA.exe | $([math]::Round($env:EXE_BYTES / 1MB, 1)) MB | ``$($env:EXE_SHA256)`` |"
-          Get-Content dist\SHA256SUMS.txt | ForEach-Object {
-            $parts = $_ -split '\s+', 2
-            $lines += "| $($parts[1]) | — | ``$($parts[0])`` |"
-          }
+
+          Get-Content dist\SHA256SUMS.txt |
+            ForEach-Object {
+              $parts = $_ -split '\s+', 2
+              $lines += "| $($parts[1]) | — | ``$($parts[0])`` |"
+            }
+
           if (Test-Path qa-report.json) {
-            $qa = Get-Content qa-report.json | ConvertFrom-Json
+            $qa = Get-Content qa-report.json |
+              ConvertFrom-Json
+
             $lines += ''
             $lines += "Packaged QA: **$($qa.passed)/$($qa.checks.Count) checks passed** against the running executable."
           }
+
           $lines += ''
           $lines += '### Windows-only checks performed in this run'
           $lines += ''
           $lines += '| check | evidence |'
           $lines += '| --- | --- |'
-          $lines += '| native Windows build, PE headers, Explorer metadata, version resource | PE + metadata step, `resource-report.txt` |'
-          $lines += '| icon extraction at 16–256 px | icon step, `resource-report.txt` |'
-          $lines += '| `DENTIVA.exe --self-test` (ok / 1.0.0 / build 100 / schema 10) on a clean folder | self-test step |'
-          $lines += '| first-run setup, sign-in, permissions, clinical → billing → inventory → reports → backup → restore | `qa-report.json` |'
-          $lines += '| every print document and paper choice as a PDF | `qa-pdfs/`, `qa-documents/` |'
-          $lines += '| real Edge rendering, 100–200 % scaling, 1024×768 → 2560×1440 | `render-dom.html`, `scaling-*.html` |'
-          $lines += '| installer, Start Menu/desktop shortcut, registry entry, uninstall with data kept, portable mode | installer step |'
-          $lines += '| Defender scan (recorded), Authenticode status (recorded) | `defender-scan.log`, `signature-status.txt` |'
-          $lines += '| SHA-256 of every published artifact re-verified on Windows | artifact step |'
+          $lines += '| native Windows build, PE headers, Explorer metadata, version resource | PE + metadata step, resource-report.txt |'
+          $lines += '| icon extraction at 16–256 px | icon step, resource-report.txt |'
+          $lines += '| DENTIVA.exe --self-test | self-test step |'
+          $lines += '| first-run setup, sign-in, clinical, billing, inventory, reports, backup and restore | qa-report.json |'
+          $lines += '| every print document and paper choice as PDF | qa-pdfs/, qa-documents/ |'
+          $lines += '| real Edge rendering and scaling | render-dom.html, scaling-*.html |'
+          $lines += '| installer, shortcuts, registry, uninstall with data kept, portable mode | installer and portable steps |'
+          $lines += '| Defender scan | defender-scan.log |'
+          $lines += '| Authenticode status | signature-status.txt |'
+          $lines += '| SHA-256 verification | artifact verification step |'
           $lines += ''
-          $lines += 'Not covered by this workflow: printing on a **physical printer** (none is available to the runner — no such claim is made) and code signing (no certificate is used; the executable is unsigned and SmartScreen may warn).
-          $lines -join "`n" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          $lines += 'Physical-printer testing is not covered by this hosted workflow.'
+          $lines += 'Code signing is not used; the executable is unsigned and SmartScreen may warn.'
+
+          $lines -join "`n" |
+            Out-File `
+              -Append `
+              -Encoding utf8 `
+              $env:GITHUB_STEP_SUMMARY
 
       - name: Publish the release
         if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish)
@@ -691,6 +1391,11 @@ jobs:
             dist/*.zip \
             dist/SHA256SUMS.txt \
             --title "Dentiva ${TAG#v} — Windows x64" \
-            --notes "Dentiva ${TAG#v} — offline-first dental practice management system for Windows. Built and verified on a Windows runner: PE resources, self-test, packaged end-to-end QA, installer/uninstaller and a real-renderer check. See docs/CHANGELOG.md for the change list and docs/INSTALL.md for installation." \
+            --notes "Dentiva ${TAG#v} — offline-first dental practice management system for Windows. Built and verified on a Windows runner. See docs/INSTALL.md and docs/CHANGELOG.md." \
             --repo "$GITHUB_REPOSITORY" || \
-          gh release upload "$TAG" dist/windows/DENTIVA.exe dist/*.zip dist/SHA256SUMS.txt --clobber --repo "$GITHUB_REPOSITORY"
+          gh release upload "$TAG" \
+            dist/windows/DENTIVA.exe \
+            dist/*.zip \
+            dist/SHA256SUMS.txt \
+            --clobber \
+            --repo "$GITHUB_REPOSITORY"
