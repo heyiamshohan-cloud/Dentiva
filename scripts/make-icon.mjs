@@ -76,11 +76,9 @@ function render(size) {
           const x = (px * samples + sx + 0.5) * step;
           const y = (py * samples + sy + 0.5) * step;
 
-          // Tile — use a square tile (no corner radius) so every GDI+ sample
-          // lands on an opaque pixel. The workflow's Get-OpaqueSamples checks
-          // an 8×8 grid and the original 22 % radius left the four corners
-          // transparent, making the 16 px frame appear empty to a 1-pixel sampler.
-          const tile = roundedRectDistance(x, y, 0.5, 0.5, 0.5, 0.5, 0.02);
+          // Tile — use a square tile so every GDI+ sample lands on an opaque
+          // pixel. The original 22 % radius left the four corners transparent.
+          const tile = roundedRectDistance(x, y, 0.5, 0.5, 0.5, 0.5, 0);
           const tileAlpha = 1 - smoothstep(-edge, edge, tile);
           if (tileAlpha <= 0) continue;
 
