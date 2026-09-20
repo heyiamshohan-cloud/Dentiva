@@ -36,7 +36,22 @@ function rawEnv() {
       } catch {
         /* ignore */
       }
-      if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 80);
+      let lastError = null;
+      for (let attempt = 1; attempt <= 8; attempt++) {
+        try {
+          if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+          lastError = null;
+          break;
+        } catch (error) {
+          lastError = error;
+          const code = error?.code;
+          const transient = code === 'EBUSY' || code === 'EPERM' || code === 'ENOTEMPTY' || code === 'EACCES';
+          if (!transient || attempt === 8) break;
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 120 * attempt);
+        }
+      }
+      if (lastError) throw new Error(`Failed to remove temporary directory '${dir}' after 8 attempts (${lastError.code}: ${lastError.message})`);
     },
   };
   return raw;

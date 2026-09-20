@@ -15,10 +15,11 @@
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { en } from '../src/shared/i18n/en.js';
 import { bn } from '../src/shared/i18n/bn.js';
 
-const ROOT = new URL('..', import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const SCAN_DIRS = ['src', 'scripts', 'tests'];
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.git', 'generated']);
 const IDENTICAL_ALLOWED = new Set([

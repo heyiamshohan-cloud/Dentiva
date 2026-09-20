@@ -11,6 +11,7 @@
  *   bun run seed:defaults --data <folder>     use a specific data folder
  *   bun run seed:defaults --dry-run           report what would change
  */
+import { fileURLToPath } from 'node:url';
 import { dataDirFromArgs, openTarget } from './lib/db-target.mjs';
 import { applyClinicDefaultsSync, listClinicIds, loadClinicDefaults, seedClinicConfiguration } from '../src/server/db/seed.js';
 import { migrationStatus } from '../src/server/db/migrations/index.js';
@@ -27,7 +28,7 @@ const allClinics = args.includes('--all-clinics');
 
 const dataDir = dataDirFromArgs(args);
 const { db, dbPath, close } = await openTarget(dataDir);
-const projectRoot = new URL('..', import.meta.url).pathname;
+const projectRoot = fileURLToPath(new URL('..', import.meta.url));
 
 try {
   const status = migrationStatus(db);

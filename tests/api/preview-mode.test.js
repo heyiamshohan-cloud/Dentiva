@@ -47,7 +47,7 @@ beforeAll(async () => {
   await fetch(`${preview.url}/api/auth/first-run`, setup);
 }, 60000);
 
-afterAll(() => {
+afterAll(async () => {
   try {
     packaged?.stop();
   } catch {
@@ -58,7 +58,26 @@ afterAll(() => {
   } catch {
     /* ignore */
   }
-  for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+  await new Promise((r) => setTimeout(r, 80));
+  for (const dir of dirs) {
+    let lastError = null;
+    for (let attempt = 1; attempt <= 8; attempt++) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+        lastError = null;
+        break;
+      } catch (error) {
+        lastError = error;
+        const code = error?.code;
+        const transient = code === 'EBUSY' || code === 'EPERM' || code === 'ENOTEMPTY' || code === 'EACCES';
+        if (!transient || attempt === 8) break;
+        await new Promise((r) => setTimeout(r, 120 * attempt));
+      }
+    }
+    if (lastError) {
+      throw new Error(`Failed to remove temporary directory '${dir}' after 8 attempts (${lastError.code}: ${lastError.message})`);
+    }
+  }
 });
 
 describe('packaged application', () => {

@@ -16,6 +16,35 @@ import { hashPassword } from '../../src/server/security/passwords.js';
 let counter = 0;
 
 /**
+ * Remove a temporary directory with bounded retry for Windows file locks.
+ * On Windows, SQLite WAL/SHM files can remain locked briefly after closeDatabase().
+ * We retry with backoff for transient errors and fail with a clear diagnostic.
+ * @param {string} dir
+ */
+function removeDirWithRetrySync(dir) {
+  const maxAttempts = 8;
+  let lastError = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      lastError = error;
+      const code = error?.code;
+      const transient = code === 'EBUSY' || code === 'EPERM' || code === 'ENOTEMPTY' || code === 'EACCES';
+      if (!transient || attempt === maxAttempts) break;
+      // Synchronous sleep with backoff (Windows needs a short pause to release locks)
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 120 * attempt);
+    }
+  }
+  const hint = lastError ? `${lastError.code ?? 'unknown'}: ${lastError.message}` : 'unknown';
+  throw new Error(
+    `Failed to remove temporary directory '${dir}' after ${maxAttempts} attempts (${hint}). ` +
+      `This usually means a file handle is still open (database, log, or window).`
+  );
+}
+
+/**
  * @param {{ provision?: boolean, quiet?: boolean }} [options]
  */
 export function createTestEnv(options = {}) {
@@ -38,7 +67,15 @@ export function createTestEnv(options = {}) {
       } catch {
         /* ignore */
       }
-      if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+      // Give Windows a moment to release the WAL lock after closeDatabase()
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 80);
+      try {
+        removeDirWithRetrySync(dir);
+      } catch (error) {
+        // Provide diagnostic and rethrow so the test runner reports it clearly
+        console.error(`\n✖ testEnv cleanup failed for ${dir}: ${error.message}`);
+        throw error;
+      }
     },
   };
 

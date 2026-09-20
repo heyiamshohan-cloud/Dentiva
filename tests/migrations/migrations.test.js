@@ -27,9 +27,29 @@ function tempDbPath() {
   dirs.push(dir);
   return join(dir, 'dentiva.db');
 }
-afterEach(() => {
-  closeDatabase();
-  while (dirs.length) rmSync(dirs.pop(), { recursive: true, force: true });
+afterEach(async () => {
+  try { closeDatabase(); } catch {}
+  await new Promise((r) => setTimeout(r, 80));
+  while (dirs.length) {
+    const dir = dirs.pop();
+    let lastError = null;
+    for (let attempt = 1; attempt <= 8; attempt++) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+        lastError = null;
+        break;
+      } catch (error) {
+        lastError = error;
+        const code = error?.code;
+        const transient = code === 'EBUSY' || code === 'EPERM' || code === 'ENOTEMPTY' || code === 'EACCES';
+        if (!transient || attempt === 8) break;
+        await new Promise((r) => setTimeout(r, 120 * attempt));
+      }
+    }
+    if (lastError) {
+      throw new Error(`Failed to remove temporary directory '${dir}' after 8 attempts (${lastError.code}: ${lastError.message})`);
+    }
+  }
 });
 
 describe('migration engine', () => {

@@ -70,9 +70,29 @@ beforeAll(async () => {
   secondCookie = `dentiva_session=${session.token}`;
 });
 
-afterAll(() => {
-  app?.stop();
-  if (dataDir && existsSync(dataDir)) rmSync(dataDir, { recursive: true, force: true });
+afterAll(async () => {
+  try { app?.stop(); } catch {}
+  // Windows: give the DB a moment to release WAL/SHM locks
+  await new Promise((r) => setTimeout(r, 80));
+  if (dataDir && existsSync(dataDir)) {
+    let lastError = null;
+    for (let attempt = 1; attempt <= 8; attempt++) {
+      try {
+        rmSync(dataDir, { recursive: true, force: true });
+        lastError = null;
+        break;
+      } catch (error) {
+        lastError = error;
+        const code = error?.code;
+        const transient = code === 'EBUSY' || code === 'EPERM' || code === 'ENOTEMPTY' || code === 'EACCES';
+        if (!transient || attempt === 8) break;
+        await new Promise((r) => setTimeout(r, 120 * attempt));
+      }
+    }
+    if (lastError) {
+      throw new Error(`Failed to remove temporary directory '${dataDir}' after 8 attempts (${lastError.code}: ${lastError.message})`);
+    }
+  }
 });
 
 describe('session and security', () => {
