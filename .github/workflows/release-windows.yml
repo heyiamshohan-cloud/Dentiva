@@ -759,7 +759,10 @@ jobs:
             exit 1
           }
 
-          $outputs = 'qa-pdfs'
+          # Absolute: the headless browser resolves --print-to-pdf against
+          # its own working directory, which is not the checkout, so a
+          # relative target path is a file it cannot find.
+          $outputs = [IO.Path]::GetFullPath('qa-pdfs')
 
           New-Item `
             -ItemType Directory `
@@ -804,9 +807,11 @@ jobs:
 
           # The print engine's version belongs in the run record: this
           # invocation has had engine regressions before, and a failure
-          # without a version attached is undiagnosable.
-          $edgeVersion = ((& $edge --version 2>$null) | Out-String).Trim()
-          Write-Host "  print engine: $edgeVersion"
+          # without a version attached is undiagnosable. Read from the
+          # executable's version info — `--version` on the command line
+          # prints nothing in this environment.
+          $edgeVersion = (Get-Item $edge).VersionInfo.ProductVersion
+          Write-Host "  print engine: Microsoft Edge $edgeVersion"
 
           $expected = @{
             A4        = @(595, 842)
@@ -984,8 +989,8 @@ jobs:
           try {
             $profile = Join-Path $env:TEMP 'dentiva-edge-qa'
 
-            $edgeVersion = ((& $edge --version 2>$null) | Out-String).Trim()
-            Write-Host "  render engine: $edgeVersion"
+            $edgeVersion = (Get-Item $edge).VersionInfo.ProductVersion
+            Write-Host "  render engine: Microsoft Edge $edgeVersion"
 
             $renderLog = Join-Path $data 'edge-render.log'
 
