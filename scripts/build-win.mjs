@@ -22,6 +22,7 @@ import { spawnSync } from 'node:child_process';
 import { APP_CREATOR_EMAIL, APP_CREATOR_WHATSAPP, APP_NAME, APP_PUBLISHER, APP_TAGLINE, APP_VERSION, BUILD_NUMBER, SCHEMA_VERSION } from '../src/shared/constants.js';
 import { describeProduct } from './lib/product-metadata.mjs';
 import { createZip } from '../src/server/domain/zip.js';
+import { verifyWindowsIcon } from './verify-windows-icon.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const DIST = join(ROOT, 'dist');
@@ -142,6 +143,21 @@ if (shellMetadata.length) {
     log('  subsystem 2 (Windows GUI)');
   }
   // The CLI switches still print: the launcher re-attaches the parent console.
+}
+
+step('Windows reads the icon back');
+// Byte-perfect is not the same as readable: ask Windows itself — the shell's
+// icon extractor and GDI+ — to open the stamped file and read the mark at every
+// size the shell asks for. A frame that cannot be decoded is a build failure
+// here, with the reason, rather than a silent one three steps later.
+{
+  const icon = verifyWindowsIcon(exePath);
+  for (const note of icon.notes) log(`  - ${note}`);
+  if (!icon.ok) {
+    for (const problem of icon.problems) console.error(`::error::ICON ${problem}`);
+    throw new Error(`Windows cannot read the Dentiva icon back: ${icon.problems.join('; ')}`);
+  }
+  log(`  Windows reads the Dentiva icon at ${icon.frames} size(s)`);
 }
 
 step('Verifying the executable');
