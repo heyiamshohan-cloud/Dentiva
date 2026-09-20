@@ -11,7 +11,7 @@
  */
 import { createHash } from 'node:crypto';
 import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { closeDatabase, currentDatabasePath, isHeldError, openDatabase, openProbeDatabase, removeFileRetrying, sleepSync } from '../db/connection.js';
 import { latestMigrationId, migrate } from '../db/migrations/index.js';
 import { assertValid } from '../domain/validation.js';
@@ -252,6 +252,31 @@ function removeDatabaseWithJournals(path) {
 }
 
 /**
+ * Describe a file that refused to move, for the abort message: its size,
+ * and whether a rename — the operation the swap actually needs — is
+ * possible at all. The restore aborts loudly on a held journal, and the
+ * run record should carry the evidence behind the refusal, not just the
+ * symptom.
+ */
+function describeHeldFile(path) {
+  const name = basename(path);
+  try {
+    const size = statSync(path).size;
+    const probePath = `${path}.holdprobe`;
+    try {
+      renameSync(path, probePath);
+      renameSync(probePath, path);
+      return `${name} size=${size}B rename=possible`;
+    } catch (error) {
+      const code = error instanceof Error ? (/** @type {any} */ (error).code ?? error.message) : String(error);
+      return `${name} size=${size}B rename=${code}`;
+    }
+  } catch {
+    return `${name} vanished-before-probe`;
+  }
+}
+
+/**
  * @param {any} db
  * @param {any} ctx
  * @param {string} archivePath
@@ -305,6 +330,9 @@ export function verifyBackup(db, ctx, archivePath) {
       for (const table of BACKUP_TABLE_COUNTS) {
         counts[table] = Number(probe.query(`SELECT COUNT(*) AS c FROM ${table}`).get()?.c ?? 0);
       }
+      // Same rule as the live database: hand the journal back before the
+      // close so the probe leaves no files behind for the platform to hold.
+      try { probe.query('PRAGMA journal_mode = DELETE').get(); } catch { /* ignore */ }
       try { probe.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch { /* ignore */ }
       probe.close();
     } catch (error) {
@@ -532,9 +560,12 @@ export function restoreBackup(db, ctx, { archivePath, backupDir = null, dataDir 
   let restoredDb = null;
   try {
     if (survivors.length) {
+      const evidence = survivors
+        .map((name) => describeHeldFile(join(dirname(databasePath), name)))
+        .join(' | ');
       throw new Error(
         `restore aborted before first open: ${survivors.join(', ')} is still held ` +
-          `by the operating system and must not meet the restored database`,
+          `by the operating system (probe: ${evidence}) and must not meet the restored database`,
       );
     }
     restoredDb = openDatabase(databasePath);

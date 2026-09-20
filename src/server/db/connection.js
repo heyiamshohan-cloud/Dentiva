@@ -191,39 +191,64 @@ export function getDb() {
 }
 
 /**
- * Close one handle, and clear its journal if the final checkpoint succeeded.
+ * Close one handle, and clear its journal if the journal is proven empty.
  *
- * A successful `wal_checkpoint(TRUNCATE)` leaves a zero-frame WAL: nothing
- * committed exists outside the main database file. bun's close does not
- * always unlink the journal files of a database that combined schema work
- * with data writes (this build demonstrably leaves them), so they survive
- * the close and sit exactly where the next open — or a restore's swap —
- * will meet the operating system, which on Windows re-opens freshly written
- * files to scan them. A file that is provably empty is safe to delete; a
- * journal that still carries frames is not, so the cleanup only runs when
- * the checkpoint reported success.
+ * The journal must not survive the close: an old journal at the live name
+ * is exactly what a restore's swap must never meet, and on Windows the
+ * operating system re-opens freshly written files, so a surviving journal
+ * is a file that can be held for seconds at the worst possible moment.
+ * This build of bun demonstrably leaves -wal and -shm behind after the
+ * last close of a database that combined schema work with data writes, so
+ * closing switches the journal mode back to DELETE first — which makes
+ * SQLite checkpoint and unlink the journal through the VFS while the
+ * connection is still in control — and only deletes what that (or, when
+ * the switch is blocked, a TRUNCATE checkpoint) proved to be empty. The
+ * next open switches the database back to WAL, so the on-disk mode in
+ * between is invisible to the application.
  */
-function closeDatabaseHandle(databasePath, db) {
-  let checkpointOk = false;
+/**
+ * Prove a connection's journal empty, and make SQLite unlink it.
+ *
+ * The mode switch back to DELETE checkpoints the WAL and unlinks -wal and
+ * -shm through the VFS while the connection is still in control, which is
+ * what matters on runtimes whose close does not release the files itself.
+ * When the switch is blocked, a truncate checkpoint still proves the
+ * journal empty. A `false` return means both were blocked, so the journal
+ * may still carry frames and must not be deleted.
+ */
+function proveJournalEmpty(db) {
+  try {
+    const row = /** @type {any} */ (db).query('PRAGMA journal_mode = DELETE').get();
+    if (String(row?.journal_mode ?? '').toLowerCase() === 'delete') return true;
+  } catch {
+    /* blocked or refused: fall through to the checkpoint path */
+  }
   try {
     /** @type {any} */ (db).exec('PRAGMA wal_checkpoint(TRUNCATE)');
-    checkpointOk = true;
+    return true;
   } catch {
-    /* a blocked checkpoint means the journal may still carry frames: leave it */
+    return false;
   }
+}
+
+function closeDatabaseHandle(databasePath, db) {
+  const journalProvenEmpty = proveJournalEmpty(db);
+
   try {
     /** @type {any} */ (db).close();
   } catch {
     /* the handle is closed either way; tracked bookkeeping below still runs */
   }
-  if (checkpointOk) {
+
+  // A file at a journal name after a proven-empty final write is safe to
+  // delete. Retrying, because the platform may still hold a file that was
+  // just written and truncated. A file that refuses to go is reported by
+  // `restoreBackup`'s quarantine, which turns it into a clean abort — never
+  // into a database opened beside its journal.
+  if (journalProvenEmpty) {
     for (const suffix of ['-wal', '-shm', '-journal']) {
       const journalPath = `${databasePath}${suffix}`;
       if (existsSync(journalPath)) {
-        // Retrying, because the platform may still hold a file that was
-        // just written and truncated. A file that refuses to go is reported
-        // by `restoreBackup`'s quarantine, which turns it into a clean
-        // abort — never into a database opened beside its journal.
         removeFileRetrying(journalPath);
       }
     }
@@ -249,8 +274,9 @@ export function closeDatabase(target = null) {
     if (path) {
       closeDatabaseHandle(path, target);
     } else {
-      let checkpointOk = false;
-      try { /** @type {any} */ (target).exec('PRAGMA wal_checkpoint(TRUNCATE)'); checkpointOk = true; } catch { }
+      // Untracked handle: the mode switch still unlinks its journal through
+      // the VFS, so the file does not survive the close either.
+      proveJournalEmpty(target);
       try { /** @type {any} */ (target).close(); } catch { }
     }
     for (const [path, db] of tracked) if (db === target) { tracked.delete(path); if (instance === target) { instance = null; instancePath = null; } break; }
