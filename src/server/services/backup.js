@@ -238,6 +238,20 @@ export function listBackups(db, ctx, { backupDir = null } = {}) {
  * @param {string} archivePath
  */
 /**
+ * Remove a temporary database file together with whatever journal it left
+ * behind. Opening a snapshot switches it to WAL mode, and a close does not
+ * always unlink the journal (same platform behaviour as the live database);
+ * these files are disposable, so every one of them goes — with retries,
+ * because the platform may still be scanning them.
+ */
+function removeDatabaseWithJournals(path) {
+  for (const suffix of ['', '-wal', '-shm', '-journal']) {
+    const target = `${path}${suffix}`;
+    if (existsSync(target)) removeFileRetrying(target);
+  }
+}
+
+/**
  * @param {any} db
  * @param {any} ctx
  * @param {string} archivePath
@@ -291,11 +305,12 @@ export function verifyBackup(db, ctx, archivePath) {
       for (const table of BACKUP_TABLE_COUNTS) {
         counts[table] = Number(probe.query(`SELECT COUNT(*) AS c FROM ${table}`).get()?.c ?? 0);
       }
+      try { probe.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch { /* ignore */ }
       probe.close();
     } catch (error) {
       problems.push({ name: DATABASE_NAME, reason: error instanceof Error ? error.message : String(error) });
     } finally {
-      rmSync(tempPath, { force: true });
+      removeDatabaseWithJournals(tempPath);
     }
   } else {
     problems.push({ name: DATABASE_NAME, reason: 'missing' });

@@ -191,6 +191,46 @@ export function getDb() {
 }
 
 /**
+ * Close one handle, and clear its journal if the final checkpoint succeeded.
+ *
+ * A successful `wal_checkpoint(TRUNCATE)` leaves a zero-frame WAL: nothing
+ * committed exists outside the main database file. bun's close does not
+ * always unlink the journal files of a database that combined schema work
+ * with data writes (this build demonstrably leaves them), so they survive
+ * the close and sit exactly where the next open — or a restore's swap —
+ * will meet the operating system, which on Windows re-opens freshly written
+ * files to scan them. A file that is provably empty is safe to delete; a
+ * journal that still carries frames is not, so the cleanup only runs when
+ * the checkpoint reported success.
+ */
+function closeDatabaseHandle(databasePath, db) {
+  let checkpointOk = false;
+  try {
+    /** @type {any} */ (db).exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    checkpointOk = true;
+  } catch {
+    /* a blocked checkpoint means the journal may still carry frames: leave it */
+  }
+  try {
+    /** @type {any} */ (db).close();
+  } catch {
+    /* the handle is closed either way; tracked bookkeeping below still runs */
+  }
+  if (checkpointOk) {
+    for (const suffix of ['-wal', '-shm', '-journal']) {
+      const journalPath = `${databasePath}${suffix}`;
+      if (existsSync(journalPath)) {
+        // Retrying, because the platform may still hold a file that was
+        // just written and truncated. A file that refuses to go is reported
+        // by `restoreBackup`'s quarantine, which turns it into a clean
+        // abort — never into a database opened beside its journal.
+        removeFileRetrying(journalPath);
+      }
+    }
+  }
+}
+
+/**
  * @param {any} [target] - a Database instance, a file path, or null to close all
  */
 export function closeDatabase(target = null) {
@@ -198,29 +238,29 @@ export function closeDatabase(target = null) {
   if (target && typeof target === 'string') {
     const db = tracked.get(target);
     if (db) {
-      try { /** @type {any} */ (db).exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch { /* ignore */ }
-      try { /** @type {any} */ (db).close(); } catch { /* ignore */ }
+      closeDatabaseHandle(target, db);
       tracked.delete(target);
       if (instancePath === target) { instance = null; instancePath = null; }
     }
     return;
   }
   if (target && typeof target === 'object' && typeof target.close === 'function') {
-    try { /** @type {any} */ (target).exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch { /* ignore */ }
-    try { /** @type {any} */ (target).close(); } catch { /* ignore */ }
+    const path = [...tracked.entries()].find(([, db]) => db === target)?.[0] ?? null;
+    if (path) {
+      closeDatabaseHandle(path, target);
+    } else {
+      let checkpointOk = false;
+      try { /** @type {any} */ (target).exec('PRAGMA wal_checkpoint(TRUNCATE)'); checkpointOk = true; } catch { }
+      try { /** @type {any} */ (target).close(); } catch { }
+    }
     for (const [path, db] of tracked) if (db === target) { tracked.delete(path); if (instance === target) { instance = null; instancePath = null; } break; }
     if (instance === target) { instance = null; instancePath = null; }
     return;
   }
   // Close the singleton and any other tracked handles (covers concurrent tests on Windows)
   for (const [path, db] of [...tracked.entries()]) {
-    try { /** @type {any} */ (db).exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch { /* ignore */ }
-    try { /** @type {any} */ (db).close(); } catch { /* ignore */ }
+    closeDatabaseHandle(path, db);
     tracked.delete(path);
-  }
-  if (instance) {
-    try { /** @type {any} */ (instance).exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch { /* ignore */ }
-    try { /** @type {any} */ (instance).close(); } catch { /* ignore */ }
   }
   instance = null;
   instancePath = null;
