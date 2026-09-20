@@ -10,7 +10,7 @@
  *    chooses, and imports read a local CSV file.
  */
 import { createHash } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { Database } from 'bun:sqlite';
 import { closeDatabase, currentDatabasePath, openDatabase } from '../db/connection.js';
@@ -316,33 +316,95 @@ export function verifyBackup(db, ctx, archivePath) {
 }
 
 /**
+ * Ways Windows says "that file is busy right now".
+ *
+ * A rename or a delete can be refused with any of these even when nothing
+ * about the data is wrong — see `replaceFile`.
+ */
+const HELD_CODES = new Set(['EPERM', 'EBUSY', 'EACCES', 'ENOTEMPTY']);
+
+/** @param {number} ms */
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Describe a file well enough to say *why* an operation on it was refused.
+ * @param {string} path
+ */
+function describeFile(path) {
+  try {
+    const stats = statSync(path);
+    let share = 'in use';
+    try {
+      const handle = openSync(path, 'r+');
+      closeSync(handle);
+      share = 'writable';
+    } catch (error) {
+      share = `not writable (${error.code ?? error.message})`;
+    }
+    return `${basename(path)} ${stats.size}B, ${share}`;
+  } catch (error) {
+    return `${basename(path)} ${error.code ?? 'unreadable'}`;
+  }
+}
+
+/**
  * Rename `from` over `to`, retrying while Windows still holds the file.
  *
  * SQLite has been closed by the time this runs, but Windows keeps a handle on a
  * file for a moment after the last one is released — anything that has just
- * been written is opened again by the platform's anti-malware scanner — and a
- * rename that lands in that window fails with EPERM or EBUSY. That is a
- * condition, not a fault: a restore is an exclusive, seconds-long operation, so
- * waiting for the platform to let go is the right answer. If it never does, the
- * real error is thrown rather than swallowed.
+ * been written is opened again by the platform's anti-malware scanner, and a
+ * handle opened without delete sharing blocks a move for as long as it is held.
+ * That is a condition, not a fault: a restore is an exclusive, seconds-long
+ * operation, so waiting for the platform to let go is the right answer.
+ *
+ * If it never does, the bytes still have to reach the database file. When the
+ * destination can be written, the copy is put through it instead — same file,
+ * same contents, only the atomic swap is lost, and the pre-restore backup
+ * covers that window. If even that fails, the real error is thrown with what
+ * both paths were doing at the time.
  *
  * @param {string} from
  * @param {string} to
  * @param {{ attempts?: number }} [options]
  */
-function replaceFile(from, to, { attempts = 20 } = {}) {
-  for (let attempt = 1; ; attempt += 1) {
+function replaceFile(from, to, { attempts = 24 } = {}) {
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
       renameSync(from, to);
       return;
     } catch (error) {
-      const code = error?.code;
-      const held = code === 'EPERM' || code === 'EBUSY' || code === 'EACCES';
-      if (!held || attempt >= attempts) throw error;
-      // 25 ms, 50 ms … up to 250 ms: long enough to outlast the scanner, short
-      // enough that a genuinely stuck file still fails quickly.
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(25 * attempt, 250));
+      lastError = error;
+      if (!HELD_CODES.has(error?.code)) throw error;
+      // 50 ms, 100 ms … up to 400 ms: long enough to outlast a scanner, short
+      // enough that a genuinely stuck file still fails in a few seconds.
+      sleepSync(Math.min(50 * attempt, 400));
     }
+  }
+
+  const detail = `source: ${describeFile(from)}; destination: ${describeFile(to)}`;
+
+  try {
+    copyFileSync(from, to);
+    try {
+      rmSync(from, { force: true });
+    } catch {
+      /* the staged copy is disposable; the database is in place */
+    }
+    console.warn(
+      `[dentiva] the restored database was written through the existing file rather than ` +
+        `renamed over it — Windows refused the rename (${lastError?.code}). ${detail}`,
+    );
+    return;
+  } catch (error) {
+    throw new Error(
+      `could not put the restored database in place: ` +
+        `rename failed with ${lastError?.code ?? lastError?.message} after ${attempts} attempts, ` +
+        `copy failed with ${error.code ?? error.message} — ${detail}`,
+    );
   }
 }
 
