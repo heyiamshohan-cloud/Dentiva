@@ -12,8 +12,7 @@
 import { createHash } from 'node:crypto';
 import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
-import { Database } from 'bun:sqlite';
-import { closeDatabase, currentDatabasePath, isHeldError, openDatabase, removeFileRetrying, sleepSync } from '../db/connection.js';
+import { closeDatabase, currentDatabasePath, isHeldError, openDatabase, openProbeDatabase, removeFileRetrying, sleepSync } from '../db/connection.js';
 import { latestMigrationId, migrate } from '../db/migrations/index.js';
 import { assertValid } from '../domain/validation.js';
 import { ConflictError, FileError, NotFoundError, UnsupportedDatabaseError, ValidationError } from '../../shared/errors.js';
@@ -283,7 +282,7 @@ export function verifyBackup(db, ctx, archivePath) {
     const tempPath = join(ctx.dataDir ?? '.', `.verify-${process.pid}-${Date.now()}.db`);
     try {
       writeFileSync(tempPath, databaseBytes);
-      const probe = new Database(tempPath);
+      const probe = openProbeDatabase(tempPath);
       const integrity = probe.query('PRAGMA integrity_check').get();
       const ok = Object.values(integrity ?? {})[0] === 'ok';
       if (!ok) problems.push({ name: DATABASE_NAME, reason: 'integrity_check_failed' });
@@ -373,29 +372,42 @@ export function quarantineJournals(databasePath, previousPath) {
   const survivors = [];
 
   for (const { suffix, path } of journalFiles(databasePath)) {
+    // A move only counts if the live name ends up clear: the copy fallback
+    // of `replaceFile` can copy the journal aside and still fail to delete
+    // the original, and a journal left at the live name is precisely the
+    // hazard. So: try the move, then verify, then fall back to removal.
+    let clear = false;
+
     try {
-      replaceFile(path, `${previousPath}${suffix}`);
-      continue;
+      replaceFile(path, `${previousPath}${suffix}`, { attempts: 3 });
+      clear = !existsSync(path);
     } catch {
-      /* it will be removed below instead */
+      clear = false;
     }
 
-    for (let attempt = 1; ; attempt += 1) {
-      try {
-        rmSync(path, { force: true });
-        break;
-      } catch (error) {
-        if (!isHeldError(error) || attempt >= 24) {
-          survivors.push(basename(path));
+    while (!clear) {
+      let removed = false;
+      for (let attempt = 1; attempt <= 12; attempt += 1) {
+        try {
+          rmSync(path, { force: true });
+          removed = true;
           break;
+        } catch (error) {
+          if (!isHeldError(error)) break;
+          if (attempt === 12) break;
+          sleepSync(Math.min(50 * attempt, 200));
         }
-        sleepSync(Math.min(50 * attempt, 400));
       }
+      if (!removed) break;
+      clear = !existsSync(path);
     }
+
+    if (!clear) survivors.push(basename(path));
   }
 
   return survivors;
 }
+
 
 /**
  * Rename `from` over `to`, retrying while Windows still holds the file.
@@ -417,7 +429,7 @@ export function quarantineJournals(databasePath, previousPath) {
  * @param {string} to
  * @param {{ attempts?: number }} [options]
  */
-function replaceFile(from, to, { attempts = 24 } = {}) {
+function replaceFile(from, to, { attempts = 16 } = {}) {
   let lastError = null;
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -427,9 +439,9 @@ function replaceFile(from, to, { attempts = 24 } = {}) {
     } catch (error) {
       lastError = error;
       if (!isHeldError(error)) throw error;
-      // 50 ms, 100 ms … up to 400 ms: long enough to outlast a scanner, short
+      // 50 ms, 100 ms … up to 300 ms: long enough to outlast a scanner, short
       // enough that a genuinely stuck file still fails in a few seconds.
-      sleepSync(Math.min(50 * attempt, 400));
+      sleepSync(Math.min(50 * attempt, 300));
     }
   }
 

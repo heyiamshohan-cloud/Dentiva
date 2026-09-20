@@ -67,15 +67,17 @@ let instancePath = null;
 /** Track every opened handle so concurrent tests can be closed reliably on Windows. */
 const tracked = new Map();
 
-// busy_timeout comes first on purpose. Switching a database into WAL mode
-// needs a brief exclusive lock, and Windows holds a file for a moment after it
-// is written while the platform scans it — so `journal_mode` is the pragma most
-// likely to be refused, and it has to be able to wait. Setting the timeout
-// after it, as this list used to, meant the one pragma that needs to wait was
-// the only one that could not.
+// Two phases. The journal switch needs a brief exclusive lock, and the
+// operating system holds a file for a while after it is written (the
+// anti-malware scanner re-opens it), so that one pragma is tried with a
+// *short* busy timeout and real backoff: stacking the full 8 s wait inside
+// every retry attempt is how a two-second hold became a three-minute open.
+// Once the database is in its journal mode, normal operations get the full
+// 8 s busy timeout they were always given.
+const OPEN_PRAGMA = 'PRAGMA busy_timeout = 1000';
 const PRAGMAS = [
-  'PRAGMA busy_timeout = 8000',
   'PRAGMA journal_mode = WAL',
+  'PRAGMA busy_timeout = 8000',
   'PRAGMA foreign_keys = ON',
   'PRAGMA synchronous = FULL',
   'PRAGMA temp_store = MEMORY',
@@ -86,20 +88,35 @@ const PRAGMAS = [
 ];
 
 /**
- * Open (or reuse) the database connection.
+ * Run a pragma, retrying while the operating system holds the file.
+ *
+ * @param {Database} db
+ * @param {string} pragma
+ * @param {{ attempts?: number, cap?: number }} [options]
+ */
+function execPragma(db, pragma, { attempts = 12, cap = 300 } = {}) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      db.exec(pragma);
+      return;
+    } catch (error) {
+      if (!isHeldError(error) || attempt >= attempts) throw error;
+      sleepSync(Math.min(50 * attempt, cap));
+    }
+  }
+}
+
+/**
+ * The shared heart of every open: create the handle and bring it to a known
+ * state, retrying while the operating system holds the file. Used by
+ * `openDatabase` for the app's database and by the backup verifier for its
+ * throwaway probe.
+ *
  * @param {string} filePath
  * @param {{ readonly?: boolean }} [options]
  * @returns {Database}
  */
-export function openDatabase(filePath, options = {}) {
-  if (instance && instancePath === filePath && !options.readonly) return instance;
-  mkdirSync(dirname(filePath), { recursive: true });
-
-  // The file is created the moment it is first written, and on Windows the
-  // platform then opens it to scan it before we have done anything with it.
-  // Both the open and the pragmas are retried while that is happening; a
-  // database that cannot be opened in its own folder is an app that cannot
-  // start, and waiting is the only answer.
+function openWithRetry(filePath, options = {}) {
   /** @type {Database | null} */
   let db = null;
   for (let attempt = 1; ; attempt += 1) {
@@ -110,22 +127,18 @@ export function openDatabase(filePath, options = {}) {
       });
       break;
     } catch (error) {
-      if (!isHeldError(error) || attempt >= 24) throw error;
-      sleepSync(Math.min(50 * attempt, 400));
+      if (!isHeldError(error) || attempt >= 12) throw error;
+      sleepSync(Math.min(50 * attempt, 300));
     }
   }
   try {
+    if (!options.readonly) {
+      execPragma(db, OPEN_PRAGMA, { attempts: 6, cap: 200 });
+      execPragma(db, 'PRAGMA journal_mode = WAL');
+    }
     for (const pragma of PRAGMAS) {
-      if (options.readonly && pragma.startsWith('PRAGMA journal_mode')) continue;
-      for (let attempt = 1; ; attempt += 1) {
-        try {
-          db.exec(pragma);
-          break;
-        } catch (error) {
-          if (!isHeldError(error) || attempt >= 24) throw error;
-          sleepSync(Math.min(50 * attempt, 400));
-        }
-      }
+      if (options.readonly && pragma === 'PRAGMA journal_mode = WAL') continue;
+      execPragma(db, pragma, { attempts: 6, cap: 200 });
     }
   } catch (error) {
     // The file was opened but could not be brought to a known state; the
@@ -137,6 +150,32 @@ export function openDatabase(filePath, options = {}) {
     }
     throw error;
   }
+  return db;
+}
+
+/**
+ * Open a throwaway database and leave it untracked: the backup verifier's
+ * probe, and any other one-shot read that must not become the app's
+ * connection. Retried exactly like the real open, because the file it reads
+ * was just written and the platform may be holding it.
+ *
+ * @param {string} filePath
+ * @returns {Database}
+ */
+export function openProbeDatabase(filePath) {
+  return openWithRetry(filePath, {});
+}
+
+/**
+ * Open (or reuse) the database connection.
+ * @param {string} filePath
+ * @param {{ readonly?: boolean }} [options]
+ * @returns {Database}
+ */
+export function openDatabase(filePath, options = {}) {
+  if (instance && instancePath === filePath && !options.readonly) return instance;
+  mkdirSync(dirname(filePath), { recursive: true });
+  const db = openWithRetry(filePath, options);
   if (!options.readonly) {
     instance = db;
     instancePath = filePath;

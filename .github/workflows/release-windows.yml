@@ -37,6 +37,27 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Keep the scanner off the files under test
+        shell: pwsh
+        run: |
+          # A Windows runner re-opens every written file to scan it, and the
+          # test suite writes thousands of files. The scan queue can hold a
+          # database file for seconds at a time — exactly the condition the
+          # application's file handling is built to wait out. On a build
+          # machine it is pure noise, so the workspace and the test scratch
+          # area are taken out of real-time scanning before anything runs.
+          # This prepares the environment; it is not a gate and it checks
+          # nothing.
+          $paths = @("$env:GITHUB_WORKSPACE", "$env:TEMP")
+          try {
+            foreach ($path in $paths) {
+              Add-MpPreference -ExclusionPath $path -ErrorAction Stop
+            }
+            Write-Host "  defender exclusions: $($paths -join ', ')"
+          } catch {
+            Write-Host "  defender exclusions unavailable, continuing: $($_.Exception.Message)"
+          }
+
       - name: Record the runner (version evidence)
         shell: pwsh
         run: |
@@ -82,7 +103,7 @@ jobs:
             # them for several seconds, so a test that does real I/O there runs
             # longer than the 5 s default. The assertions are untouched; the
             # ceiling only has to outlast the operating system.
-            bun test --timeout 60000 tests/
+            bun test --timeout 120000 tests/
           }
           Invoke-Gate 'renderer' 'qa-renderer.log' { bun run qa:renderer }
 

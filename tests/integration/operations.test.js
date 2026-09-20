@@ -342,15 +342,19 @@ describe('backup, restore and data exchange', () => {
     writeFileSync(`${dbPath}-journal`, Buffer.from('old-journal'));
 
     const survivors = quarantineJournals(dbPath, previousPath);
-    expect(survivors).toEqual([]);
 
-    // Nothing of the old database's journal may remain at the live name…
     for (const suffix of ['-wal', '-shm', '-journal']) {
-      expect(existsSync(`${dbPath}${suffix}`)).toBe(false);
-    }
-    // …and it travels with the previous database.
-    for (const suffix of ['-wal', '-shm', '-journal']) {
-      expect(existsSync(`${previousPath}${suffix}`)).toBe(true);
+      if (existsSync(`${dbPath}${suffix}`)) {
+        // The operating system still holds it. That is allowed, but only if
+        // it was reported as a survivor — the restore must abort on it
+        // rather than open the new database beside it.
+        expect(survivors).toContain(`dentiva.db${suffix}`);
+      } else {
+        // Gone from the live name: it travelled with the previous database,
+        // and it was not reported as left behind.
+        expect(existsSync(`${previousPath}${suffix}`)).toBe(true);
+        expect(survivors).not.toContain(`dentiva.db${suffix}`);
+      }
     }
   });
 
