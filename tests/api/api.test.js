@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import { startServer } from '../../src/server/index.js';
 import { createApiRouter } from '../../src/server/http/routes.js';
 import { createUserWithRole } from '../helpers/testEnv.js';
+import { closeDatabase } from '../../src/server/db/connection.js';
 
 let app;
 let dataDir;
@@ -72,8 +73,11 @@ beforeAll(async () => {
 
 afterAll(async () => {
   try { app?.db?.close(); } catch {}
+  try { closeDatabase(app?.db); } catch {}
   try { app?.stop(); } catch {}
   try { app?.db?.close(); } catch {}
+  try { closeDatabase(dataDir); } catch {}
+  try { closeDatabase(); } catch {}
   // Windows: give the DB a moment to release WAL/SHM locks
   await new Promise((r) => setTimeout(r, 200));
   if (dataDir && existsSync(dataDir)) {

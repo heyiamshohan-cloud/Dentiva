@@ -18,6 +18,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startServer } from '../../src/server/index.js';
+import { closeDatabase } from '../../src/server/db/connection.js';
 
 const APP_TOKEN = 'packaged-token';
 
@@ -49,7 +50,9 @@ beforeAll(async () => {
 
 afterAll(async () => {
   try { packaged?.db?.close(); } catch {}
+  try { closeDatabase(packaged?.db); } catch {}
   try { preview?.db?.close(); } catch {}
+  try { closeDatabase(preview?.db); } catch {}
   try {
     packaged?.stop();
   } catch {
@@ -61,7 +64,10 @@ afterAll(async () => {
     /* ignore */
   }
   try { packaged?.db?.close(); } catch {}
+  try { closeDatabase(packaged?.db); } catch {}
   try { preview?.db?.close(); } catch {}
+  try { closeDatabase(preview?.db); } catch {}
+  try { closeDatabase(); } catch {}
   await new Promise((r) => setTimeout(r, 200));
   for (const dir of dirs) {
     let lastError = null;
