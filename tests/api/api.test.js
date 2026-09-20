@@ -9,12 +9,13 @@
  * parsing and the permission map agree — a 500 anywhere fails the suite.
  */
 import { describe, expect, test, beforeAll, afterAll } from 'bun:test';
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startServer } from '../../src/server/index.js';
 import { createApiRouter } from '../../src/server/http/routes.js';
 import { createUserWithRole } from '../helpers/testEnv.js';
+import { removeScratchDir } from '../../scripts/lib/scratch.mjs';
 
 let app;
 let dataDir;
@@ -76,25 +77,7 @@ afterAll(async () => {
   try { app?.db?.close(); } catch {}
   // Windows: give the DB a moment to release WAL/SHM locks
   await new Promise((r) => setTimeout(r, 200));
-  if (dataDir && existsSync(dataDir)) {
-    let lastError = null;
-    for (let attempt = 1; attempt <= 8; attempt++) {
-      try {
-        rmSync(dataDir, { recursive: true, force: true });
-        lastError = null;
-        break;
-      } catch (error) {
-        lastError = error;
-        const code = error?.code;
-        const transient = code === 'EBUSY' || code === 'EPERM' || code === 'ENOTEMPTY' || code === 'EACCES';
-        if (!transient || attempt === 8) break;
-        await new Promise((r) => setTimeout(r, 120 * attempt));
-      }
-    }
-    if (lastError) {
-      throw new Error(`Failed to remove temporary directory '${dataDir}' after 8 attempts (${lastError.code}: ${lastError.message})`);
-    }
-  }
+  if (dataDir) await removeScratchDir(dataDir, 'api data directory');
 });
 
 describe('session and security', () => {

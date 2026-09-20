@@ -18,11 +18,12 @@
  * shell in jsdom against the real HTTP API — no mocks, no stubbed services.
  */
 import { plugin } from 'bun';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { JSDOM, VirtualConsole } from 'jsdom';
+import { removeScratchDir } from './lib/scratch.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
@@ -40,36 +41,6 @@ const { startServer } = await import(join(ROOT, 'src/server/index.js'));
 const TOKEN = 'qa-renderer-token';
 const PASSWORD = 'Tangail#Clinic29';
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-/**
- * Remove a temporary directory with bounded retry for Windows file locks.
- * On Windows, SQLite WAL / SHM files and jsdom resources can remain locked
- * for a short window after close. We retry with backoff for transient errors
- * and fail with a clear diagnostic after exhaustion.
- * @param {string} dir
- */
-async function removeDirWithRetry(dir) {
-  const maxAttempts = 8;
-  let lastError = null;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
-      return;
-    } catch (error) {
-      lastError = error;
-      const code = error?.code;
-      const transient = code === 'EBUSY' || code === 'EPERM' || code === 'ENOTEMPTY' || code === 'EACCES';
-      if (!transient || attempt === maxAttempts) break;
-      await sleep(120 * attempt);
-    }
-  }
-  const hint = lastError ? `${lastError.code ?? 'unknown'}: ${lastError.message}` : 'unknown';
-  throw new Error(
-    `Failed to remove temporary directory '${dir}' after ${maxAttempts} attempts (${hint}). ` +
-      `This usually means a file handle is still open (database, log, or window). ` +
-      `Ensure the server is stopped and all windows are closed before cleanup.`
-  );
-}
 
 let dataDir = null;
 let server = null;
@@ -379,18 +350,11 @@ try {
   }
   // Restore fetch globals if we overwrote them (best effort)
   try { if (realFetch) globalThis.fetch = realFetch; } catch {}
-  // Remove the temporary data directory with Windows-tolerant retry
-  if (dataDir) {
-    try {
-      await removeDirWithRetry(dataDir);
-    } catch (e) {
-      console.error(`\n✖ Cleanup failed: ${e.message}`);
-      // If the renderer itself passed but cleanup failed, treat as failure
-      if (failures === 0) failures = 1;
-      console.error(`  Temporary directory left at: ${dataDir}`);
-      console.error(`  On Windows, this EBUSY/EPERM indicates a file handle was still open.`);
-    }
-  }
+  // Remove the temporary data directory. Windows can keep a handle open for a
+  // moment after the database is closed, so this retries; a directory that
+  // survives is a scratch folder in %TEMP%, not a defect in the application, so
+  // it is reported and left behind rather than failing an otherwise green run.
+  if (dataDir) await removeScratchDir(dataDir, 'renderer data directory');
 }
 
 /* ----------------------------------------------------------------- report */

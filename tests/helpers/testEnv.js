@@ -5,44 +5,16 @@
  * SQLite database, runs the migrations and (optionally) provisions a clinic so
  * integration tests exercise the same code paths as production.
  */
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { closeDatabase, openDatabase, run, get } from '../../src/server/db/connection.js';
 import { migrate } from '../../src/server/db/migrations/index.js';
 import { provisionClinic } from '../../src/server/services/clinic.js';
 import { hashPassword } from '../../src/server/security/passwords.js';
+import { removeScratchDirSync } from '../../scripts/lib/scratch.mjs';
 
 let counter = 0;
-
-/**
- * Remove a temporary directory with bounded retry for Windows file locks.
- * On Windows, SQLite WAL/SHM files can remain locked briefly after closeDatabase().
- * We retry with backoff for transient errors and fail with a clear diagnostic.
- * @param {string} dir
- */
-function removeDirWithRetrySync(dir) {
-  const maxAttempts = 8;
-  let lastError = null;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
-      return;
-    } catch (error) {
-      lastError = error;
-      const code = error?.code;
-      const transient = code === 'EBUSY' || code === 'EPERM' || code === 'ENOTEMPTY' || code === 'EACCES';
-      if (!transient || attempt === maxAttempts) break;
-      // Synchronous sleep with backoff (Windows needs a short pause to release locks)
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 120 * attempt);
-    }
-  }
-  const hint = lastError ? `${lastError.code ?? 'unknown'}: ${lastError.message}` : 'unknown';
-  throw new Error(
-    `Failed to remove temporary directory '${dir}' after ${maxAttempts} attempts (${hint}). ` +
-      `This usually means a file handle is still open (database, log, or window).`
-  );
-}
 
 /**
  * @param {{ provision?: boolean, quiet?: boolean }} [options]
@@ -68,14 +40,7 @@ export function createTestEnv(options = {}) {
       try { closeDatabase(dbPath); } catch { /* ignore */ }
       try { closeDatabase(); } catch { /* ignore */ }
       // Give Windows a moment to release the WAL lock after close
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 120);
-      try {
-        removeDirWithRetrySync(dir);
-      } catch (error) {
-        // Provide diagnostic and rethrow so the test runner reports it clearly
-        console.error(`\n✖ testEnv cleanup failed for ${dir}: ${error.message}`);
-        throw error;
-      }
+      removeScratchDirSync(dir, 'test data directory');
     },
   };
 

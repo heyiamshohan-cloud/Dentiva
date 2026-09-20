@@ -18,7 +18,8 @@
  * at the end — it never touches a real clinic database.
  */
 import { describe, expect, test, afterAll, beforeAll } from 'bun:test';
-import { mkdtempSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, statSync } from 'node:fs';
+import { removeScratchDirSync } from '../../scripts/lib/scratch.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { closeDatabase, openDatabase } from '../../src/server/db/connection.js';
@@ -102,21 +103,7 @@ beforeAll(() => {
       try { closeDatabase(db); } catch { /* ignore */ }
       try { closeDatabase(); } catch { /* ignore */ }
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
-      let lastError = null;
-      for (let attempt = 1; attempt <= 8; attempt++) {
-        try {
-          rmSync(dir, { recursive: true, force: true });
-          lastError = null;
-          break;
-        } catch (error) {
-          lastError = error;
-          const code = error?.code;
-          const transient = code === 'EBUSY' || code === 'EPERM' || code === 'ENOTEMPTY' || code === 'EACCES';
-          if (!transient || attempt === 8) break;
-          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 120 * attempt);
-        }
-      }
-      if (lastError) throw new Error(`Failed to remove temporary directory '${dir}' after 8 attempts (${lastError.code}: ${lastError.message})`);
+      removeScratchDirSync(dir, 'large-data directory');
     },
   };
 

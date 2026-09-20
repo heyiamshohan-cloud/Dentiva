@@ -5,7 +5,8 @@
  * gains the two columns the treatment editor needs to recalculate correctly.
  */
 import { describe, expect, test, afterEach } from 'bun:test';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
+import { removeScratchDirSync } from '../../scripts/lib/scratch.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createTestEnv } from '../helpers/testEnv.js';
@@ -37,21 +38,7 @@ function rawEnv() {
         /* ignore */
       }
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 80);
-      let lastError = null;
-      for (let attempt = 1; attempt <= 8; attempt++) {
-        try {
-          if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
-          lastError = null;
-          break;
-        } catch (error) {
-          lastError = error;
-          const code = error?.code;
-          const transient = code === 'EBUSY' || code === 'EPERM' || code === 'ENOTEMPTY' || code === 'EACCES';
-          if (!transient || attempt === 8) break;
-          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 120 * attempt);
-        }
-      }
-      if (lastError) throw new Error(`Failed to remove temporary directory '${dir}' after 8 attempts (${lastError.code}: ${lastError.message})`);
+      removeScratchDirSync(dir, 'migration data directory');
     },
   };
   return raw;

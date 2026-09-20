@@ -14,10 +14,11 @@
  *     header accepted, and a *valid* token still required (no autologin).
  */
 import { describe, expect, test, beforeAll, afterAll } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startServer } from '../../src/server/index.js';
+import { removeScratchDir } from '../../scripts/lib/scratch.mjs';
 
 const APP_TOKEN = 'packaged-token';
 
@@ -63,25 +64,7 @@ afterAll(async () => {
   try { packaged?.db?.close(); } catch {}
   try { preview?.db?.close(); } catch {}
   await new Promise((r) => setTimeout(r, 200));
-  for (const dir of dirs) {
-    let lastError = null;
-    for (let attempt = 1; attempt <= 8; attempt++) {
-      try {
-        rmSync(dir, { recursive: true, force: true });
-        lastError = null;
-        break;
-      } catch (error) {
-        lastError = error;
-        const code = error?.code;
-        const transient = code === 'EBUSY' || code === 'EPERM' || code === 'ENOTEMPTY' || code === 'EACCES';
-        if (!transient || attempt === 8) break;
-        await new Promise((r) => setTimeout(r, 120 * attempt));
-      }
-    }
-    if (lastError) {
-      throw new Error(`Failed to remove temporary directory '${dir}' after 8 attempts (${lastError.code}: ${lastError.message})`);
-    }
-  }
+  for (const dir of dirs) await removeScratchDir(dir, 'preview data directory');
 });
 
 describe('packaged application', () => {

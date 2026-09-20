@@ -380,23 +380,35 @@ export function decodeIcoFrame(data) {
   return { width, height, rgba };
 }
 
+/** @param {{ data: Buffer }[]} images */
+const imageBytes = (images) => images.reduce((sum, image) => sum + image.data.length, 0);
+
 /**
- * Prepare the icon images that go into the resource section.
+ * Every icon set worth trying, most faithful first.
  *
- * Windows accepts PNG-compressed frames (Vista and later) and every shipped
- * 256-pixel icon uses one: re-encoding the largest frames as PNG keeps the
- * whole icon well inside the `.rsrc` section that a cross-compiled image
- * already has, so no section has to grow or move.
+ * The `.rsrc` section is fixed by the compiler — the stamper rewrites it in
+ * place and must never move it — so the icon has to fit whatever room is
+ * there. The order in which room is found matters:
+ *
+ *   1. the frames exactly as `resources/icon.ico` stores them;
+ *   2. the same set with the largest frames re-encoded as PNG;
+ *   3. only if that still does not fit, the largest frames dropped.
+ *
+ * Windows' own icon loader decodes PNG frames (Vista and later), so (2) keeps
+ * every size available to Explorer, the taskbar and the Start Menu. GDI+ /
+ * `System.Drawing.Icon` cannot read them, which is exactly why BMP frames are
+ * kept whenever they fit and why a frame is only ever dropped as a last
+ * resort — never before compression has been tried.
  *
  * @param {Buffer} ico
- * @param {{ pngFrom?: number, budget?: number }} [options]
+ * @returns {{ id: number, width: number, height: number, bitsPerPixel: number, original: Buffer, data: Buffer, encoded: 'bmp'|'png' }[][]}
  */
-export function buildIconResource(ico, { budget = Infinity } = {}) {
+export function iconVariants(ico) {
   const source = readIco(ico);
   if (!source.length) throw new Error('the icon file contains no images');
-  /** @type {{ id: number, width: number, height: number, bitsPerPixel: number, original: Buffer, data: Buffer, encoded: 'bmp'|'png' }[]} */
-  const images = source
-    .map((image) => /** @type {any} */ ({
+  /** @type {any[]} */
+  const base = source
+    .map((image) => ({
       id: 0,
       width: image.width,
       height: image.height,
@@ -408,17 +420,96 @@ export function buildIconResource(ico, { budget = Infinity } = {}) {
     }))
     .sort((a, b) => a.width - b.width || a.height - b.height);
 
-  const total = () => images.reduce((sum, image) => sum + image.data.length, 0);
-  // Prefer BMP for GDI+ compatibility: System.Drawing.Icon on Windows Server
-  // cannot decode PNG-compressed frames, so the workflow's "Icon resources"
-  // gate counts PNG frames as a GDI+ gap and requires at least 5 BMP sizes.
-  // To stay within the .rsrc budget we drop the largest frame(s) instead of
-  // PNG-compressing them — the remaining BMP frames still cover every Explorer
-  // size (16..128) and the gate tolerates a missing 256.
-  while (total() > budget && images.length > 5) images.pop();
-  if (total() > budget) throw new Error(`the icon (${total()} bytes) does not fit the available ${budget} bytes`);
-  images.forEach((image, index) => { image.id = index + 1; });
-  return images;
+  /** @param {any} image */
+  const asPng = (image) => ({
+    ...image,
+    data: encodePng(decodeIcoFrame(image.original)),
+    bitsPerPixel: 32,
+    encoded: 'png',
+  });
+  /** @param {any[]} list */
+  const numbered = (list) => {
+    const images = list.map((image) => ({ ...image }));
+    images.forEach((image, index) => { image.id = index + 1; });
+    return images;
+  };
+
+  /** @type {any[][]} */
+  const variants = [];
+  for (let compressed = 0; compressed <= base.length; compressed += 1) {
+    variants.push(numbered(base.map((image, index) => (
+      index >= base.length - compressed ? asPng(image) : image
+    ))));
+  }
+  // Last resort: give up the largest sizes rather than fail the build. Five
+  // sizes still cover 16, 24, 32, 48 and 64 px, which is what the shell asks
+  // for on every desktop.
+  for (let dropped = 1; base.length - dropped >= 5; dropped += 1) {
+    variants.push(numbered(base.slice(0, base.length - dropped)));
+  }
+  return variants;
+}
+
+/**
+ * The icon images that fit a byte budget, choosing the most faithful variant.
+ *
+ * @param {Buffer} ico
+ * @param {{ budget?: number }} [options]
+ */
+export function buildIconResource(ico, { budget = Infinity } = {}) {
+  const variants = iconVariants(ico);
+  const chosen = variants.find((images) => imageBytes(images) <= budget);
+  if (!chosen) {
+    throw new Error(`the icon (${imageBytes(variants[variants.length - 1])} bytes) does not fit the available ${budget} bytes`);
+  }
+  return chosen;
+}
+
+/** The four resource groups that make up the Dentiva resource tree. */
+function resourceGroups(images, versionInfo, manifest) {
+  return [
+    {
+      type: RT_ICON,
+      resources: images.map((image) => ({ id: image.id, language: 1033, data: image.data })),
+    },
+    {
+      type: RT_GROUP_ICON,
+      // Numeric id 1 (MAINICON) is what ExtractAssociatedIcon and the shell
+      // look for first; every Windows API finds the Dentiva icon through it.
+      resources: [{ id: 1, language: 1033, data: buildIconGroup(images) }],
+    },
+    {
+      type: RT_VERSION,
+      resources: [{ id: 1, language: 1033, data: versionInfo }],
+    },
+    {
+      type: RT_MANIFEST,
+      resources: [{ id: 1, language: 1033, data: manifest }],
+    },
+  ];
+}
+
+/**
+ * Choose the icon set whose **complete** resource tree — icon frames, group,
+ * version information, manifest and the directory itself — fits the `.rsrc`
+ * section, and return it together with the tree that was measured.
+ *
+ * Fitting the whole tree rather than the icon alone is the point: on a natively
+ * compiled Windows image the seven raw frames come within a hundred bytes of
+ * filling the section, and a budget that merely guessed at the overhead let the
+ * tree grow a fraction too large for the space it has to live in.
+ *
+ * @param {Buffer} ico
+ * @param {{ available: number, baseRva: number, versionInfo: Buffer, manifest: Buffer }} options
+ */
+export function planResources(ico, { available, baseRva, versionInfo, manifest }) {
+  let smallest = 0;
+  for (const images of iconVariants(ico)) {
+    const { content, size } = buildResourceDirectory(resourceGroups(images, versionInfo, manifest), baseRva);
+    if (size <= available) return { images, content, size };
+    if (!smallest || size < smallest) smallest = size;
+  }
+  throw new Error(`the icon and the resource tree (${smallest} bytes) do not fit the ${available} bytes of .rsrc`);
 }
 
 /** GRPICONDIR + GRPICONDIRENTRY records for a set of icon images. */
@@ -720,35 +811,12 @@ export function stampExecutable(buffer, { icon, versionInfo } = {}) {
   const manifestBlob = buffer.subarray(manifest.offset, manifest.offset + manifest.size);
 
   const available = Math.min(section.virtualSize, section.rawSize);
-  const images = buildIconResource(icon, { budget: available - 512 });
-  /** @type {ResourceGroup[]} */
-  const groups = [
-    {
-      type: RT_ICON,
-      resources: images.map((image) => ({ id: image.id, language: 1033, data: image.data })),
-    },
-    {
-      type: RT_GROUP_ICON,
-      // Windows' ExtractAssociatedIcon and System.Drawing.Icon(path,size,size)
-      // historically look for a numeric group id (1 / MAINICON). A purely named
-      // group (IDI_MYICON) is ignored by some GDI+ builds, which caused the
-      // "Icon resources at every Windows size" gate to see a transparent icon.
-      // Use the standard numeric id so every Windows API finds the Dentiva icon.
-      resources: [{ id: 1, language: 1033, data: buildIconGroup(images) }],
-    },
-    {
-      type: RT_VERSION,
-      resources: [{ id: 1, language: 1033, data: versionInfo }],
-    },
-    {
-      type: RT_MANIFEST,
-      resources: [{ id: 1, language: 1033, data: manifestBlob }],
-    },
-  ];
-  const { content, size } = buildResourceDirectory(groups, directory.rva);
-  if (size > available) {
-    throw new Error(`the new resource tree (${size} bytes) does not fit in the ${available} bytes of .rsrc`);
-  }
+  const { images, content, size } = planResources(icon, {
+    available,
+    baseRva: directory.rva,
+    versionInfo,
+    manifest: manifestBlob,
+  });
 
   const output = Buffer.from(buffer);
   output.fill(0, regionStart, regionEnd);

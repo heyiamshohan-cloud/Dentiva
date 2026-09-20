@@ -8,7 +8,8 @@
  * and sets `backup.lastRunAt`.
  */
 import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync } from 'node:fs';
+import { removeScratchDir } from '../../scripts/lib/scratch.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openDatabase, closeDatabase } from '../../src/server/db/connection.js';
@@ -88,21 +89,7 @@ describe('automatic backup — running it', () => {
     try { closeDatabase(db); } catch { /* ignore */ }
     try { closeDatabase(); } catch { /* ignore */ }
     await new Promise((r) => setTimeout(r, 200));
-    let lastError = null;
-    for (let attempt = 1; attempt <= 8; attempt++) {
-      try {
-        rmSync(dir, { recursive: true, force: true });
-        lastError = null;
-        break;
-      } catch (error) {
-        lastError = error;
-        const code = error?.code;
-        const transient = code === 'EBUSY' || code === 'EPERM' || code === 'ENOTEMPTY' || code === 'EACCES';
-        if (!transient || attempt === 8) break;
-        await new Promise((r) => setTimeout(r, 120 * attempt));
-      }
-    }
-    if (lastError) throw new Error(`Failed to remove temporary directory '${dir}' after 8 attempts (${lastError.code}: ${lastError.message})`);
+    await removeScratchDir(dir, 'scheduler data directory');
   });
 
   test('a due clinic gets a verified archive and a last-run stamp', () => {

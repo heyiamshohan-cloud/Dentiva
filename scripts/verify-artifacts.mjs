@@ -22,8 +22,8 @@ import { fileURLToPath } from 'node:url';
 import { listZip, readZipEntry } from '../src/server/domain/zip.js';
 import {
   buildIconGroup,
-  buildIconResource,
   buildVersionInfo,
+  planResources,
   parsePe,
   parseVersionInfo,
   RESOURCE_DIRECTORY_INDEX,
@@ -111,8 +111,20 @@ console.log('\n▸ Executable identity');
   const iconSource = readFileSync(join(ROOT, 'resources/icon.ico'));
   const pe = parsePe(exeBytes);
   const section = pe.sectionForRva(pe.dataDirectories[RESOURCE_DIRECTORY_INDEX].rva);
-  const budget = section ? Math.min(section.virtualSize, section.rawSize) - 512 : 0;
-  const expectedImages = buildIconResource(iconSource, { budget });
+  // The stamper picks the icon set that makes the *whole* resource tree fit the
+  // section, so the same planner — with the same section, version block and
+  // manifest — has to answer that question here. Guessing a budget instead
+  // would let the two disagree by a few bytes.
+  const available = section ? Math.min(section.virtualSize, section.rawSize) : 0;
+  const manifestResource = resourcesOfType(exeBytes, RT_MANIFEST)[0] ?? null;
+  const expectedImages = planResources(iconSource, {
+    available,
+    baseRva: pe.dataDirectories[RESOURCE_DIRECTORY_INDEX].rva,
+    versionInfo: buildVersionInfo(productVersionStrings(), { fileVersion: FOUR_PART_VERSION, productVersion: FOUR_PART_VERSION }),
+    manifest: manifestResource
+      ? exeBytes.subarray(manifestResource.offset, manifestResource.offset + manifestResource.size)
+      : Buffer.alloc(0),
+  }).images;
   const embedded = resourcesOfType(exeBytes, RT_ICON).sort((a, b) => Number(a.id) - Number(b.id));
   const group = resourcesOfType(exeBytes, RT_GROUP_ICON);
 

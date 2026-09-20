@@ -5,7 +5,7 @@
  *  resulting schema.
  */
 import { describe, expect, test, afterEach } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Database } from 'bun:sqlite';
@@ -20,6 +20,7 @@ import {
 } from '../../src/server/db/migrations/index.js';
 import { SCHEMA_VERSION } from '../../src/shared/constants.js';
 import { UnsupportedDatabaseError } from '../../src/shared/errors.js';
+import { removeScratchDir } from '../../scripts/lib/scratch.mjs';
 
 const dirs = [];
 function tempDbPath() {
@@ -30,26 +31,7 @@ function tempDbPath() {
 afterEach(async () => {
   try { closeDatabase(); } catch {}
   await new Promise((r) => setTimeout(r, 80));
-  while (dirs.length) {
-    const dir = dirs.pop();
-    let lastError = null;
-    for (let attempt = 1; attempt <= 8; attempt++) {
-      try {
-        rmSync(dir, { recursive: true, force: true });
-        lastError = null;
-        break;
-      } catch (error) {
-        lastError = error;
-        const code = error?.code;
-        const transient = code === 'EBUSY' || code === 'EPERM' || code === 'ENOTEMPTY' || code === 'EACCES';
-        if (!transient || attempt === 8) break;
-        await new Promise((r) => setTimeout(r, 120 * attempt));
-      }
-    }
-    if (lastError) {
-      throw new Error(`Failed to remove temporary directory '${dir}' after 8 attempts (${lastError.code}: ${lastError.message})`);
-    }
-  }
+  while (dirs.length) await removeScratchDir(dirs.pop(), 'migration data directory');
 });
 
 describe('migration engine', () => {

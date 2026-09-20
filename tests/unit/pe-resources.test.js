@@ -27,6 +27,7 @@ import {
   encodePng,
   listResources,
   parsePe,
+  planResources,
   parseVersionInfo,
   readIco,
   resourcesOfType,
@@ -192,19 +193,79 @@ describe('application icon', () => {
     }
   });
 
-  test('keeps raw frames when they fit and drops the largest when they do not', () => {
+  test('every frame ends with a complete, four-byte-aligned AND mask', () => {
+    // Windows reads the colour rows *and* the AND mask out of the frame, and
+    // it pads every mask row up to a four-byte boundary. A mask sized
+    // `width * height / 8` is therefore short for every width that is not a
+    // multiple of 32 (16, 24 and 48 px here), which makes GDI+ and the icon
+    // loader read past the end of the frame and hand back an empty image.
+    for (const image of readIco(icon)) {
+      expect(image.isPng).toBe(false);
+      const width = image.data.readInt32LE(4);
+      const height = Math.abs(image.data.readInt32LE(8)) / 2;
+      const xorSize = width * height * 4;
+      const maskRowBytes = Math.ceil(width / 32) * 4;
+      const maskSize = maskRowBytes * height;
+      expect(image.data.length).toBe(40 + xorSize + maskSize);
+      // biSizeImage counts the colour data and the mask.
+      expect(image.data.readUInt32LE(20)).toBe(xorSize + maskSize);
+      // Both the colour rows and the mask rows are stored bottom-up, and a
+      // mask bit is set exactly where the pixel is fully transparent.
+      let mismatched = 0;
+      for (let row = 0; row < height; row += 1) {
+        for (let column = 0; column < width; column += 1) {
+          const alpha = image.data[40 + ((height - 1 - row) * width + column) * 4 + 3];
+          const bit = (image.data[40 + xorSize + row * maskRowBytes + (column >> 3)] >> (7 - (column & 7))) & 1;
+          if (bit !== (alpha === 0 ? 1 : 0)) mismatched += 1;
+        }
+      }
+      expect(mismatched).toBe(0);
+    }
+  });
+
+  test('keeps every size, compressing only the frames that do not fit', () => {
     const roomy = buildIconResource(icon, { budget: 1024 * 1024 });
     expect(roomy.every((image) => image.encoded === 'bmp')).toBe(true);
     expect(roomy.map((image) => image.width)).toEqual([16, 24, 32, 48, 64, 128, 256]);
 
-    const budget = 120 * 1024;
+    // A tight budget compresses the largest frames instead of dropping them:
+    // Windows decodes PNG frames, so every size stays reachable from Explorer.
+    const budget = 200 * 1024;
     const tight = buildIconResource(icon, { budget });
     expect(tight.reduce((sum, image) => sum + image.data.length, 0)).toBeLessThanOrEqual(budget);
-    // GDI+ cannot decode PNG frames, so we keep BMP and drop the largest instead
-    // of PNG-compressing — the remaining BMP frames still cover every Explorer size.
-    expect(tight.every((image) => image.encoded === 'bmp')).toBe(true);
-    expect(tight.length).toBeGreaterThanOrEqual(5);
-    expect(tight.length).toBeLessThanOrEqual(7);
+    expect(tight.map((image) => image.width)).toEqual([16, 24, 32, 48, 64, 128, 256]);
+    expect(tight.filter((image) => image.encoded === 'png').map((image) => image.width)).toEqual([256]);
+    // The sizes GDI+ reads are left uncompressed.
+    expect(tight.filter((image) => image.encoded === 'bmp').map((image) => image.width)).toEqual([16, 24, 32, 48, 64, 128]);
+  });
+
+  test('the whole resource tree is fitted, not just the icon frames', () => {
+    // 374292 bytes is the room a natively compiled Windows image leaves in
+    // `.rsrc`. The seven raw frames fill 374384 bytes of tree once the group,
+    // the version block, the manifest and the directory are counted — 92 bytes
+    // too many — so a budget that only measured the icon would build a tree
+    // that does not fit, and the planner has to fall back to compression.
+    const plan = planResources(icon, {
+      available: 374292,
+      baseRva: 0x1000,
+      versionInfo: buildVersionInfo(productVersionStrings(), { fileVersion: FOUR_PART_VERSION, productVersion: FOUR_PART_VERSION }),
+      // 505 bytes is what Bun's own application manifest weighs, and the
+      // planner has to leave room for it alongside the icon.
+      manifest: Buffer.alloc(505, 0x20),
+    });
+    expect(plan.size).toBeLessThanOrEqual(374292);
+    expect(plan.images.map((image) => image.width)).toEqual([16, 24, 32, 48, 64, 128, 256]);
+    expect(plan.images.filter((image) => image.encoded === 'bmp').map((image) => image.width)).toEqual([16, 24, 32, 48, 64, 128]);
+
+    // With room to spare the frames are embedded exactly as the icon stores them.
+    const spacious = planResources(icon, {
+      available: 1024 * 1024,
+      baseRva: 0x1000,
+      versionInfo: buildVersionInfo(productVersionStrings(), { fileVersion: FOUR_PART_VERSION, productVersion: FOUR_PART_VERSION }),
+      manifest: Buffer.alloc(0),
+    });
+    expect(spacious.images.every((image) => image.encoded === 'bmp')).toBe(true);
+    expect(spacious.images.map((image) => image.width)).toEqual([16, 24, 32, 48, 64, 128, 256]);
   });
 
   test('a PNG frame is pixel-identical to the raw frame it replaces', () => {
@@ -241,10 +302,21 @@ describe('application icon', () => {
 const hasBuiltExe = existsSync(EXE_PATH);
 const suite = hasBuiltExe ? describe : describe.skip;
 
-suite('the built DENTIVA.exe', () => {
-  const exe = readFileSync(EXE_PATH);
+/**
+ * The built executable is deliberately read *inside* the tests, not in the
+ * `describe` body: a skipped `describe` still runs its body to collect the
+ * tests, so reading it there made a fresh checkout (no `dist/`) fail the whole
+ * suite with ENOENT instead of skipping, as this file's header promises.
+ * @returns {Buffer}
+ */
+function builtExe() {
+  if (!hasBuiltExe) throw new Error('the executable has not been built');
+  return readFileSync(EXE_PATH);
+}
 
+suite('the built DENTIVA.exe', () => {
   test('is a 64-bit GUI image', () => {
+    const exe = builtExe();
     const pe = parsePe(exe);
     expect(pe.machine).toBe(0x8664);
     expect(pe.isPe32Plus).toBe(true);
@@ -252,6 +324,7 @@ suite('the built DENTIVA.exe', () => {
   });
 
   test('carries Dentiva’s icon, version information and manifest', () => {
+    const exe = builtExe();
     const icons = resourcesOfType(exe, RT_ICON);
     // GDI+ path keeps BMP frames and drops the largest when the .rsrc budget is
     // tight (e.g. Linux cross-compile), so the built image may have 6 or 7
@@ -273,6 +346,7 @@ suite('the built DENTIVA.exe', () => {
   });
 
   test('stamping is deterministic and only touches the resource section', () => {
+    const exe = builtExe();
     const { stampExecutable } = require('../../scripts/lib/pe.mjs');
     const versionInfo = buildVersionInfo(productVersionStrings(), { fileVersion: FOUR_PART_VERSION, productVersion: FOUR_PART_VERSION });
     const once = stampExecutable(exe, { icon, versionInfo });

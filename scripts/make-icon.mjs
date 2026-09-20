@@ -76,11 +76,8 @@ function render(size) {
           const x = (px * samples + sx + 0.5) * step;
           const y = (py * samples + sy + 0.5) * step;
 
-          // Tile — use a square tile (no corner radius) so every GDI+ sample
-          // lands on an opaque pixel. The workflow's Get-OpaqueSamples checks
-          // an 8×8 grid and the original 22 % radius left the four corners
-          // transparent, making the 16 px frame appear empty to a 1-pixel sampler.
-          const tile = roundedRectDistance(x, y, 0.5, 0.5, 0.5, 0.5, 0.02);
+          // Tile — the Dentiva mark is a rounded teal tile (22 % corner radius).
+          const tile = roundedRectDistance(x, y, 0.5, 0.5, 0.5, 0.5, 0.22);
           const tileAlpha = 1 - smoothstep(-edge, edge, tile);
           if (tileAlpha <= 0) continue;
 
@@ -164,20 +161,42 @@ function crc32(buffer) {
 
 /* --------------------------------------------------------------------- ico */
 
-/** @param {Uint8Array} pixels @param {number} size */
+/**
+ * One `.ico` frame: a 32-bit BMP (colour rows + AND mask, both bottom-up).
+ *
+ * The AND mask is the part that is easiest to get wrong and the part Windows
+ * is least forgiving about: **every mask row is padded to a four-byte
+ * boundary**, so its size is `ceil(width / 32) * 4 * height`, not
+ * `width * height / 8`. Those two only agree when the width is a multiple of
+ * 32, which is why 16, 24 and 48 px frames used to be written 32, 24 and 96
+ * bytes too short — Windows and GDI+ then read past the end of the frame and
+ * either reject the image or hand back an empty one.
+ *
+ * `biSizeImage` counts the colour *and* the mask bytes so a loader that trusts
+ * it reserves the right amount.
+ *
+ * @param {Uint8Array} pixels @param {number} size
+ */
 function bmpEntry(pixels, size) {
+  const xorSize = size * size * 4;
+  const maskRowBytes = Math.ceil(size / 32) * 4;
+  const maskSize = maskRowBytes * size;
+
   const header = Buffer.alloc(40);
   header.writeUInt32LE(40, 0);
   header.writeInt32LE(size, 4);
   header.writeInt32LE(size * 2, 8);   // height is doubled for the AND mask
   header.writeUInt16LE(1, 12);
   header.writeUInt16LE(32, 14);
-  header.writeUInt32LE(size * size * 4 + (size * size) / 8, 20);
+  header.writeUInt32LE(xorSize + maskSize, 20);
 
-  const body = Buffer.alloc(size * size * 4);
+  const body = Buffer.alloc(xorSize);
+  const mask = Buffer.alloc(maskSize);
   for (let y = 0; y < size; y += 1) {
-    // Bitmaps are stored bottom-up, BGRA order.
+    // Bitmaps are stored bottom-up, BGRA order; the mask rows follow the
+    // same bottom-up order, one bit per pixel, most significant bit first.
     const source = (size - 1 - y) * size * 4;
+    const maskRow = y * maskRowBytes;
     for (let x = 0; x < size; x += 1) {
       const from = source + x * 4;
       const to = (y * size + x) * 4;
@@ -185,9 +204,11 @@ function bmpEntry(pixels, size) {
       body[to + 1] = pixels[from + 1];
       body[to + 2] = pixels[from];
       body[to + 3] = pixels[from + 3];
+      // 1 = transparent. Pixels carrying a real alpha value stay 0 (opaque)
+      // so the mask and the alpha channel never disagree.
+      if (pixels[from + 3] === 0) mask[maskRow + (x >> 3)] |= 0x80 >> (x & 7);
     }
   }
-  const mask = Buffer.alloc((size * size) / 8);
   return Buffer.concat([header, body, mask]);
 }
 
