@@ -129,9 +129,19 @@ console.log('\n▸ Executable identity');
   if (!group.length) {
     fail('the executable has no icon group — Explorer would show a generic icon');
   } else {
-    const bytes = exeBytes.subarray(group[0].offset, group[0].offset + group[0].size);
-    if (bytes.equals(buildIconGroup(expectedImages))) ok(`icon group “${group[0].name}” lists every size (taskbar, Start Menu, Explorer, installer)`);
-    else fail('the icon group does not match the embedded icon sizes');
+    const expectedGroup = buildIconGroup(expectedImages);
+    const matching = group.find((entry) => {
+      const bytes = exeBytes.subarray(entry.offset, entry.offset + entry.size);
+      return bytes.equals(expectedGroup);
+    });
+    if (matching) {
+      const label = matching.name ?? `#${matching.id}`;
+      ok(`icon group “${label}” lists every size (taskbar, Start Menu, Explorer, installer)`);
+    } else {
+      fail('the icon group does not match the embedded icon sizes');
+    }
+    // Windows' ExtractAssociatedIcon historically prefers id 1; ensure it exists.
+    if (!group.some((entry) => entry.id === 1)) notes.push('icon group id 1 missing — ExtractAssociatedIcon may fail on some GDI+ paths');
   }
 
   const expectedStrings = productVersionStrings();

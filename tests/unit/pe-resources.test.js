@@ -251,15 +251,19 @@ suite('the built DENTIVA.exe', () => {
   test('carries Dentiva’s icon, version information and manifest', () => {
     expect(resourcesOfType(exe, RT_ICON).length).toBe(7);
     const group = resourcesOfType(exe, RT_GROUP_ICON);
-    expect(group.length).toBe(1);
-    expect(group[0].name).toBe('IDI_MYICON');
+    // The stamper now writes both a numeric id (1) for ExtractAssociatedIcon
+    // compatibility and the historic named entry IDI_MYICON.
+    expect(group.length).toBeGreaterThanOrEqual(1);
+    expect(group.some((entry) => entry.id === 1)).toBe(true);
+    expect(group.some((entry) => entry.name === 'IDI_MYICON')).toBe(true);
     expect(resourcesOfType(exe, RT_MANIFEST).length).toBe(1);
 
     const version = resourcesOfType(exe, RT_VERSION);
     expect(version.length).toBe(1);
     const parsed = parseVersionInfo(exe, version[0].offset);
     expect(parsed.strings).toEqual(productVersionStrings());
-    expect(listResources(exe).length).toBe(10);
+    // 7 icons + 2 groups (id 1 + IDI_MYICON) + version + manifest = 11
+    expect(listResources(exe).length).toBe(11);
   });
 
   test('stamping is deterministic and only touches the resource section', () => {
